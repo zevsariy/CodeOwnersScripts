@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import operator
 import sys
-from collections import Counter
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from codeowners_tools.analysis import find_unowned_paths, find_unused_entries, load_entries_and_repo_files
-from codeowners_tools.git_activity import build_activity_index, suggest_owners_for_paths
+from codeowners_tools.audit import generate_audit
 from codeowners_tools.groups import GroupConfigError, load_group_definitions
 from codeowners_tools.remote import prepare_repository
 
@@ -87,28 +84,18 @@ def _resolve_paths(unowned: List[str], limit: int) -> List[str]:
     return unowned[:limit]
 
 
-_COMPARE = {
-    ">": operator.gt,
-    ">=": operator.ge,
-    "<": operator.lt,
-    "<=": operator.le,
-    "==": operator.eq,
-    "!=": operator.ne,
-}
-
-
-def _evaluate_check(check, groups: Dict[str, List[str]]):
-    if not check.group:
-        return "unparsed", None, False
-    members = groups.get(check.group)
-    if members is None:
-        return "missing", None, False
-    compare = _COMPARE.get(check.operator)
-    if compare is None:
-        return "unsupported", len(members), False
-    size = len(members)
-    passed = compare(size, check.threshold)
-    return ("pass" if passed else "fail"), size, passed
+def _format_guardrail_status(status: str) -> str:
+    if status == "pass":
+        return "pass"
+    if status == "fail":
+        return "FAIL"
+    if status == "missing-group":
+        return "unresolved group"
+    if status == "unsupported-operator":
+        return "unsupported operator"
+    if status == "unparsed":
+        return "unparsed"
+    return status
 
 
 def main() -> int:
@@ -142,121 +129,104 @@ def main() -> int:
                 print(f"Failed to load group config: {exc}", file=sys.stderr)
                 return 2
 
-        parse_result, tracked_files = load_entries_and_repo_files(
-            codeowners_path,
-            repo_root,
+        audit = generate_audit(
+            repo_root=repo_root,
+            codeowners_path=codeowners_path,
+            repo_url=args.repo_url,
+            branch=args.branch,
             group_definitions=group_definitions,
+            max_unowned=args.max_unowned,
+            suggest_limit=args.suggest_limit,
+            min_commits=args.min_commits,
+            include_merges=args.include_merges,
+            since=args.since,
         )
-
-        entries = parse_result.entries
-        unused = find_unused_entries(entries, tracked_files)
-        unowned = find_unowned_paths(entries, tracked_files)
-        check_summaries = [(_evaluate_check(check, parse_result.groups), check) for check in parse_result.checks]
-
         print("=== CODEOWNERS Audit ===")
         print(f"Repository root: {repo_root}")
         if args.repo_url:
             ref = args.branch or "default"
             print(f"Source: {args.repo_url} (branch: {ref})")
         print(f"CODEOWNERS file: {codeowners_path}")
+        print(f"Tracked files: {audit.tracked_files_count}")
         print()
 
-        if unused:
-            print(f"Unused patterns: {len(unused)}")
-            for entry in unused[: args.max_unowned]:
+        if audit.unused_entries:
+            print(f"Unused patterns: {audit.unused_total}")
+            for entry in audit.unused_entries[: args.max_unowned]:
                 owners = " ".join(entry.owners)
                 location = f"{entry.source.name}:{entry.line_number}"
                 print(f"  - {entry.pattern:<30} owners: {owners:<30} ({location})")
-            if len(unused) > args.max_unowned:
-                print(f"  ... and {len(unused) - args.max_unowned} more")
+            if audit.unused_total > args.max_unowned:
+                print(f"  ... and {audit.unused_total - args.max_unowned} more")
         else:
             print("Unused patterns: none ✅")
         print()
 
-        if check_summaries:
+        if audit.guardrails:
             print("Guardrail checks:")
-            for (status, size, passed), check in check_summaries:
-                if status == "pass":
-                    label = "pass"
-                elif status == "fail":
-                    label = "FAIL"
-                elif status == "missing":
-                    label = "unresolved group"
-                elif status == "unsupported":
-                    label = "unsupported operator"
-                else:
-                    label = status
-                member_text = "?" if size is None else str(size)
+            for guardrail in audit.guardrails:
+                label = _format_guardrail_status(guardrail.status)
+                member_text = "?" if guardrail.member_count is None else str(guardrail.member_count)
                 print(
-                    f"  - {check.raw} -> {label} (members: {member_text}, target: {check.threshold})"
+                    f"  - {guardrail.directive.raw} -> {label} (members: {member_text}, target: {guardrail.directive.threshold})"
                 )
             print()
 
-        if unowned:
-            print(f"Uncovered files: {len(unowned)}")
-            sample = _resolve_paths(unowned, args.max_unowned)
+        if audit.unowned_paths:
+            print(f"Uncovered files: {audit.unowned_total}")
+            sample = _resolve_paths(audit.unowned_paths, args.max_unowned)
             for path in sample:
                 print(f"  - {path}")
-            if len(unowned) > len(sample):
-                print(f"  ... and {len(unowned) - len(sample)} more")
+            if audit.unowned_total > len(sample):
+                print(f"  ... and {audit.unowned_total - len(sample)} more")
 
-            top_dirs = Counter(path.split("/", 1)[0] for path in unowned)
-            print("\nTop directories missing owners:")
-            for directory, count in top_dirs.most_common(10):
-                print(f"  - {directory}: {count} file(s)")
+            if audit.top_directories:
+                print("\nTop directories missing owners:")
+                for directory, count in audit.top_directories:
+                    print(f"  - {directory}: {count} file(s)")
 
             print("\nSuggested owners (based on Git activity):")
-            targets = sample or unowned[: args.max_unowned]
-            index = build_activity_index(
-                repo_root=repo_root,
-                include_merges=args.include_merges,
-                since=args.since,
-                paths=targets,
-            )
-            suggestions = suggest_owners_for_paths(
-                index,
-                targets,
-                limit=args.suggest_limit,
-                min_commits=args.min_commits,
-            )
-            for item in suggestions:
-                header = "Directory" if item.is_directory else "File"
-                print(f"  {header}: {item.path}")
-                if not item.candidates:
-                    print("    (no contributors with enough commits)")
-                    continue
-                for candidate in item.candidates:
-                    share = f"{candidate.share * 100:5.1f}%" if item.total_commits else "  0.0%"
-                    print(f"    - {candidate.identity:<30} {candidate.commits:4d} commits ({share})")
-                if args.min_commits > 1:
-                    print(f"      * contributors need >= {args.min_commits} commits")
+            if audit.suggestions:
+                for item in audit.suggestions:
+                    header = "Directory" if item.is_directory else "File"
+                    print(f"  {header}: {item.path}")
+                    if not item.candidates:
+                        print("    (no contributors with enough commits)")
+                        continue
+                    for candidate in item.candidates:
+                        share = f"{candidate.share * 100:5.1f}%" if item.total_commits else "  0.0%"
+                        print(
+                            f"    - {candidate.identity:<30} {candidate.commits:4d} commits ({share})"
+                        )
+                    if args.min_commits > 1:
+                        print(f"      * contributors need >= {args.min_commits} commits")
+            else:
+                if not audit.suggestion_targets:
+                    print("  (no suggestion targets)")
+                else:
+                    print("  (no contributors with enough commits)")
         else:
             print("Uncovered files: none ✅")
 
-        has_check_failures = any(
-            status in {"fail", "missing", "unsupported", "unparsed"}
-            for (status, _, _), _ in check_summaries
-        )
-
         print("\nNext actions:")
-        if unused or unowned or has_check_failures:
-            if unused:
+        if audit.has_issues:
+            if audit.unused_entries:
                 print("  - prune or fix unused patterns above")
-            if unowned:
+            if audit.unowned_paths:
                 print("  - add CODEOWNERS entries for uncovered paths")
                 print("  - reach out to suggested owners to confirm responsibility")
-            if has_check_failures:
+            if audit.has_guardrail_failures:
                 print("  - resolve guardrail checks that are failing or unresolved")
         else:
-            if check_summaries:
-                if check_summaries and all(status == "pass" for (status, _, _), _ in check_summaries):
-                    print("  - all guardrail checks satisfied 🛡️")
-                else:
+            if audit.guardrails:
+                if audit.has_guardrail_failures:
                     print("  - review guardrail check warnings")
+                else:
+                    print("  - all guardrail checks satisfied 🛡️")
             else:
                 print("  - CODEOWNERS file covers all tracked files and patterns in use 🎉")
 
-        if args.fail_on_issues and (unused or unowned or has_check_failures):
+        if args.fail_on_issues and audit.has_issues:
             return 1
         return 0
 

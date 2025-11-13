@@ -1,7 +1,9 @@
-from pathlib import Path
+import subprocess
 from collections import Counter
 from contextlib import ExitStack
+from pathlib import Path
 
+from codeowners_tools.audit import generate_audit
 from codeowners_tools.codeowners import CodeownersEntry, parse_codeowners, resolve_owner_for_path
 from codeowners_tools.analysis import find_unowned_paths, find_unused_entries
 from codeowners_tools.git_activity import GitActivityIndex, suggest_owners_for_paths
@@ -116,3 +118,56 @@ def test_parse_codeowners_with_groups_and_checks(tmp_path):
     assert result.checks[0].threshold == 2
     assert result.checks[1].group == "New_Group"
     assert result.checks[1].threshold == 1
+
+
+def _run_git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True)
+
+
+def test_generate_audit_reports_uncovered_and_guardrail_issues(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    codeowners_content = """
+@@Platform: @alice @bob
+CODEOWNERS @@Platform
+*.py @@Platform
+docs/** @docs
+scripts/** @ops
+Check (@@Platform >= 3)
+"""
+    (repo / "CODEOWNERS").write_text(codeowners_content.strip())
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text("print('hi')\n")
+    (repo / "docs").mkdir()
+    (repo / "docs" / "readme.md").write_text("docs\n")
+    (repo / "infra").mkdir()
+    (repo / "infra" / "server.tf").write_text("resource\n")
+
+    _run_git(repo, "init")
+    _run_git(repo, "config", "user.email", "test@example.com")
+    _run_git(repo, "config", "user.name", "Test User")
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", "Initial commit")
+
+    audit = generate_audit(
+        repo_root=repo,
+        codeowners_path=repo / "CODEOWNERS",
+        max_unowned=5,
+        suggest_limit=2,
+    )
+
+    assert audit.unused_total == 1
+    assert audit.unused_entries[0].pattern == "scripts/**"
+    assert audit.unowned_paths == ["infra/server.tf"]
+    assert audit.top_directories == [("infra", 1)]
+    assert audit.has_guardrail_failures
+    statuses = {status.status for status in audit.guardrails}
+    assert "fail" in statuses
+    assert audit.has_issues
+    assert audit.suggestion_targets == ["infra/server.tf"]
+    assert audit.suggestions
+    first_suggestion = audit.suggestions[0]
+    assert first_suggestion.path == "infra/server.tf"
+    assert first_suggestion.candidates
+    assert first_suggestion.candidates[0].identity == "Test User <test@example.com>"

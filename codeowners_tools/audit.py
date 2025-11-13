@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+import operator
+import time
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from .analysis import find_unowned_paths, find_unused_entries, load_entries_and_repo_files
+from .codeowners import CodeownersEntry, CodeownersParseResult, CheckDirective
+from .git_activity import build_activity_index, suggest_owners_for_paths, PathOwnershipSuggestion
+
+
+@dataclass
+class GuardrailStatus:
+    directive: CheckDirective
+    status: str
+    member_count: Optional[int]
+    passed: bool
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "raw": self.directive.raw,
+            "status": self.status,
+            "member_count": self.member_count,
+            "threshold": self.directive.threshold,
+            "operator": self.directive.operator,
+            "line_number": self.directive.line_number,
+            "source": str(self.directive.source),
+            "passed": self.passed,
+        }
+
+
+@dataclass
+class AuditResult:
+    repo_root: Path
+    codeowners_path: Path
+    repo_url: Optional[str]
+    branch: Optional[str]
+    parse_result: CodeownersParseResult
+    tracked_files_count: int
+    unused_entries: List[CodeownersEntry]
+    unowned_paths: List[str]
+    top_directories: List[Tuple[str, int]]
+    guardrails: List[GuardrailStatus]
+    suggestions: List[PathOwnershipSuggestion]
+    suggestion_targets: List[str]
+    config: Dict[str, object]
+    duration_seconds: float
+
+    @property
+    def unused_total(self) -> int:
+        return len(self.unused_entries)
+
+    @property
+    def unowned_total(self) -> int:
+        return len(self.unowned_paths)
+
+    @property
+    def has_guardrail_failures(self) -> bool:
+        return any(status.status != "pass" for status in self.guardrails)
+
+    @property
+    def has_issues(self) -> bool:
+        return bool(self.unused_entries or self.unowned_paths or self.has_guardrail_failures)
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "repo_root": str(self.repo_root),
+            "codeowners_path": str(self.codeowners_path),
+            "repo_url": self.repo_url,
+            "branch": self.branch,
+            "tracked_files_count": self.tracked_files_count,
+            "config": self.config,
+            "duration_seconds": self.duration_seconds,
+            "unused_entries": [
+                {
+                    "pattern": entry.pattern,
+                    "owners": entry.owners,
+                    "line_number": entry.line_number,
+                    "source": str(entry.source),
+                }
+                for entry in self.unused_entries
+            ],
+            "unowned_paths": self.unowned_paths,
+            "top_directories": [
+                {"path": path, "count": count} for path, count in self.top_directories
+            ],
+            "guardrails": [status.to_dict() for status in self.guardrails],
+            "suggestions": [
+                {
+                    "path": suggestion.path,
+                    "is_directory": suggestion.is_directory,
+                    "total_commits": suggestion.total_commits,
+                    "candidates": [
+                        {
+                            "identity": candidate.identity,
+                            "commits": candidate.commits,
+                            "share": candidate.share,
+                        }
+                        for candidate in suggestion.candidates
+                    ],
+                }
+                for suggestion in self.suggestions
+            ],
+            "suggestion_targets": self.suggestion_targets,
+            "groups": self.parse_result.groups,
+        }
+
+
+_COMPARE = {
+    ">": operator.gt,
+    ">=": operator.ge,
+    "<": operator.lt,
+    "<=": operator.le,
+    "==": operator.eq,
+    "!=": operator.ne,
+}
+
+
+def evaluate_guardrails(
+    checks: Sequence[CheckDirective],
+    groups: Dict[str, Sequence[str]],
+) -> List[GuardrailStatus]:
+    results: List[GuardrailStatus] = []
+    for check in checks:
+        if not check.group:
+            results.append(GuardrailStatus(check, "unparsed", None, False))
+            continue
+        members = groups.get(check.group)
+        if members is None:
+            results.append(GuardrailStatus(check, "missing-group", None, False))
+            continue
+        comparator = _COMPARE.get(check.operator)
+        if comparator is None:
+            member_list = list(members)
+            results.append(GuardrailStatus(check, "unsupported-operator", len(member_list), False))
+            continue
+        member_list = list(members)
+        size = len(member_list)
+        passed = comparator(size, check.threshold)
+        status = "pass" if passed else "fail"
+        results.append(GuardrailStatus(check, status, size, passed))
+    return results
+
+
+def _determine_suggestion_targets(
+    unowned_paths: List[str],
+    display_limit: int,
+    explicit_targets: Optional[Sequence[str]] = None,
+) -> List[str]:
+    if explicit_targets:
+        return list(explicit_targets)
+    if not unowned_paths:
+        return []
+    if display_limit <= 0:
+        return []
+    slice_limit = min(display_limit, len(unowned_paths))
+    sample = unowned_paths[:slice_limit]
+    if sample:
+        return sample
+    return []
+
+
+def generate_audit(
+    repo_root: Path,
+    codeowners_path: Path,
+    *,
+    repo_url: Optional[str] = None,
+    branch: Optional[str] = None,
+    group_definitions: Optional[Dict[str, Sequence[str]]] = None,
+    max_unowned: int = 20,
+    suggest_limit: int = 3,
+    min_commits: int = 1,
+    include_merges: bool = False,
+    since: Optional[str] = None,
+    restrict_to_targets: bool = False,
+    explicit_targets: Optional[Sequence[str]] = None,
+    top_directory_limit: int = 10,
+) -> AuditResult:
+    start = time.perf_counter()
+
+    parse_result, tracked_files = load_entries_and_repo_files(
+        codeowners_path,
+        repo_root,
+        group_definitions=group_definitions,
+    )
+
+    unused_entries = find_unused_entries(parse_result.entries, tracked_files)
+    unowned_paths = find_unowned_paths(parse_result.entries, tracked_files)
+
+    top_counter: Counter[str] = Counter(path.split("/", 1)[0] for path in unowned_paths)
+    top_directories = top_counter.most_common(top_directory_limit)
+
+    guardrails = evaluate_guardrails(parse_result.checks, parse_result.groups)
+
+    suggestion_targets = _determine_suggestion_targets(
+        unowned_paths,
+        max_unowned,
+        explicit_targets=explicit_targets,
+    )
+
+    suggestions: List[PathOwnershipSuggestion] = []
+    if suggestion_targets:
+        paths_for_log = suggestion_targets if restrict_to_targets else None
+        index = build_activity_index(
+            repo_root=repo_root,
+            include_merges=include_merges,
+            since=since,
+            paths=paths_for_log,
+        )
+        suggestions = suggest_owners_for_paths(
+            index,
+            suggestion_targets,
+            limit=suggest_limit,
+            min_commits=min_commits,
+        )
+
+    duration = time.perf_counter() - start
+
+    return AuditResult(
+        repo_root=repo_root,
+        codeowners_path=codeowners_path,
+        repo_url=repo_url,
+        branch=branch,
+        parse_result=parse_result,
+        tracked_files_count=len(tracked_files),
+        unused_entries=unused_entries,
+        unowned_paths=unowned_paths,
+        top_directories=top_directories,
+        guardrails=guardrails,
+        suggestions=suggestions,
+        suggestion_targets=suggestion_targets,
+        config={
+            "max_unowned": max_unowned,
+            "suggest_limit": suggest_limit,
+            "min_commits": min_commits,
+            "include_merges": include_merges,
+            "since": since,
+            "restrict_to_targets": restrict_to_targets,
+            "explicit_targets": list(explicit_targets) if explicit_targets else None,
+            "top_directory_limit": top_directory_limit,
+        },
+        duration_seconds=duration,
+    )
