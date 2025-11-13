@@ -4,8 +4,8 @@ Utility scripts that help grow CODEOWNERS coverage and ownership culture in Git 
 
 ## Scripts
 
-- `scripts/check_unused_patterns.py` - report CODEOWNERS patterns that never match tracked files.
-- `scripts/find_unowned_paths.py` - list tracked files that have no owner assignment.
+- `scripts/check_unused_patterns.py` - report CODEOWNERS patterns that never match tracked files (supports local path or `--repo-url`).
+- `scripts/find_unowned_paths.py` - list tracked files that have no owner assignment (works with remote clones too).
 - `scripts/suggest_owners.py` - guess potential owners based on Git activity.
 - `scripts/run_audit.py` - run an end-to-end audit showing unused masks, uncovered files, and suggested owners in one pass.
 
@@ -19,7 +19,7 @@ python -m venv .venv
 
 ## Usage
 
-By default the scripts look for `CODEOWNERS` in the repository root and use the current directory as the repository. Override with `--repo-root` or `--codeowners` when needed.
+By default the scripts use the current directory, but you can point them at another repo with `--repo-root` or supply `--repo-url` to clone a remote branch on the fly. Pair `--codeowners` when the file lives outside the root (for example `.github/CODEOWNERS`).
 
 ### Check unused patterns
 
@@ -43,6 +43,12 @@ You can analyze specific paths:
 
 ```powershell
 python scripts\suggest_owners.py --paths src/feature/ README.md
+```
+
+To analyze a remote repository in one-off mode:
+
+```powershell
+python scripts\run_audit.py --repo-url https://github.com/org/repo.git --branch main --codeowners .github/CODEOWNERS
 ```
 
 ### All-in-one audit

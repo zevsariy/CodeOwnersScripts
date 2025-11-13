@@ -1,9 +1,11 @@
 from pathlib import Path
 from collections import Counter
+from contextlib import ExitStack
 
 from codeowners_tools.codeowners import CodeownersEntry, resolve_owner_for_path
 from codeowners_tools.analysis import find_unowned_paths, find_unused_entries
 from codeowners_tools.git_activity import GitActivityIndex, suggest_owners_for_paths
+from codeowners_tools.remote import prepare_repository
 
 
 def make_entry(pattern: str, owners: list[str]) -> CodeownersEntry:
@@ -66,3 +68,15 @@ def test_suggest_owners_for_file_and_directory() -> None:
     assert dir_suggestion.is_directory
     assert dir_suggestion.candidates[0].identity == "Alice <alice@example.com>"
     assert dir_suggestion.candidates[0].commits == 6
+
+
+def test_prepare_repository_defaults_to_cwd(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with ExitStack() as stack:
+        result = prepare_repository(stack, None, None, None)
+        assert result == tmp_path
+
+def test_prepare_repository_returns_repo_root(tmp_path):
+    with ExitStack() as stack:
+        result = prepare_repository(stack, tmp_path, None, None)
+        assert result == tmp_path.resolve()

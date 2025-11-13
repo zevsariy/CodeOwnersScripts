@@ -9,6 +9,7 @@ from .git_activity import (
     build_activity_index,
     suggest_owners_for_paths,
 )
+from .remote import prepare_repository
 
 __all__ = [
     "CodeownersEntry",
@@ -18,4 +19,5 @@ __all__ = [
     "find_unowned_paths",
     "build_activity_index",
     "suggest_owners_for_paths",
+    "prepare_repository",
 ]
