@@ -2,7 +2,7 @@ from pathlib import Path
 from collections import Counter
 from contextlib import ExitStack
 
-from codeowners_tools.codeowners import CodeownersEntry, resolve_owner_for_path
+from codeowners_tools.codeowners import CodeownersEntry, parse_codeowners, resolve_owner_for_path
 from codeowners_tools.analysis import find_unowned_paths, find_unused_entries
 from codeowners_tools.git_activity import GitActivityIndex, suggest_owners_for_paths
 from codeowners_tools.remote import prepare_repository
@@ -76,7 +76,43 @@ def test_prepare_repository_defaults_to_cwd(tmp_path, monkeypatch):
         result = prepare_repository(stack, None, None, None)
         assert result == tmp_path
 
+
 def test_prepare_repository_returns_repo_root(tmp_path):
     with ExitStack() as stack:
         result = prepare_repository(stack, tmp_path, None, None)
         assert result == tmp_path.resolve()
+
+
+def test_parse_codeowners_with_groups_and_checks(tmp_path):
+    codeowners_content = """
+@@Platform_ANY: @alice @bob
+#Testing any
+{
+    /.anyfile @@Platform_ANY
+    /.dev* @@New_Group
+    Check (@@Platform_ANY >= 2)
+    Check (@@New_Group >=1)
+}
+@@New_Group: @charlie
+"""
+    path = tmp_path / "CODEOWNERS"
+    path.write_text(codeowners_content)
+
+    result = parse_codeowners(path)
+
+    assert len(result.entries) == 2
+    first, second = result.entries
+    assert first.pattern == "/.anyfile"
+    assert first.owners == ["@alice", "@bob"]
+    assert second.pattern == "/.dev*"
+    assert second.owners == ["@charlie"]
+
+    assert result.groups["Platform_ANY"] == ["@alice", "@bob"]
+    assert result.groups["New_Group"] == ["@charlie"]
+
+    assert len(result.checks) == 2
+    assert result.checks[0].group == "Platform_ANY"
+    assert result.checks[0].operator == ">="
+    assert result.checks[0].threshold == 2
+    assert result.checks[1].group == "New_Group"
+    assert result.checks[1].threshold == 1

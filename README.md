@@ -7,7 +7,7 @@ Utility scripts that help grow CODEOWNERS coverage and ownership culture in Git 
 - `scripts/check_unused_patterns.py` - report CODEOWNERS patterns that never match tracked files (supports local path or `--repo-url`).
 - `scripts/find_unowned_paths.py` - list tracked files that have no owner assignment (works with remote clones too).
 - `scripts/suggest_owners.py` - guess potential owners based on Git activity.
-- `scripts/run_audit.py` - run an end-to-end audit showing unused masks, uncovered files, and suggested owners in one pass.
+- `scripts/run_audit.py` - run an end-to-end audit showing unused masks, uncovered files, and guardrail check results in one pass.
 
 ## Setup
 
@@ -19,7 +19,7 @@ python -m venv .venv
 
 ## Usage
 
-By default the scripts use the current directory, but you can point them at another repo with `--repo-root` or supply `--repo-url` to clone a remote branch on the fly. Pair `--codeowners` when the file lives outside the root (for example `.github/CODEOWNERS`).
+By default the scripts use the current directory, but you can point them at another repo with `--repo-root` or supply `--repo-url` to clone a remote branch on the fly. Pair `--codeowners` when the file lives outside the root (for example `.github/CODEOWNERS`). Use `--group-config` to point at a group definition file when your CODEOWNERS uses `@@Group` aliases.
 
 ### Check unused patterns
 
@@ -54,10 +54,44 @@ python scripts\run_audit.py --repo-url https://github.com/org/repo.git --branch 
 ### All-in-one audit
 
 ```powershell
-python scripts\run_audit.py --repo-root C:\path\to\repo --codeowners CODEOWNERS --fail-on-issues
+python scripts\run_audit.py --repo-root C:\path\to\repo --codeowners CODEOWNERS --group-config groups.txt --fail-on-issues
 ```
 
-Change `--max-unowned` to trim the detailed list and apply `--since` when you only care about recent activity.
+Change `--max-unowned` to trim the detailed list and apply `--since` when you only care about recent activity. Guardrail directives written as `Check (@@Group >= 2)` are evaluated and surfaced in the report (provide group membership via `--group-config`).
+
+### Extended syntax support
+
+Besides the standard CODEOWNERS grammar, the parser understands:
+
+- Group aliases referenced as `@@GroupName`, optionally defined inline (`@@GroupName: @alice @bob`) or in an external config file (JSON, YAML, or simple `key: value` text).
+- Nested groups (`@@Backend` can expand to other `@@` aliases).
+- Guardrail directives in block sections, e.g.
+
+	```text
+	#Testing any
+	{
+			/.anyfile @@Platform_ANY
+			/.dev* @@New_Group
+			Check (@@Platform_ANY >= 2)
+			Check (@@New_Group >=1)
+	}
+	```
+
+Group definitions file examples:
+
+```text
+@@Platform_ANY: @alice @bob @carol
+@@New_Group = @dave @erin
+```
+
+or
+
+```json
+{
+	"Platform_ANY": ["@alice", "@bob", "@carol"],
+	"New_Group": "@dave @erin"
+}
+```
 
 ### Quick smoke-test
 
@@ -88,22 +122,22 @@ Below is a minimal GitHub Actions workflow that runs the tests and fails the bui
 name: codeowners-audit
 
 on:
-	pull_request:
-	push:
+  pull_request:
+  push:
 
 jobs:
-	audit:
-		runs-on: ubuntu-latest
-		steps:
-			- uses: actions/checkout@v4
-			- uses: actions/setup-python@v5
-				with:
-					python-version: "3.11"
-			- run: python -m pip install --upgrade pip
-			- run: pip install -r requirements-dev.txt
-			- run: python -m pytest
-			- run: python scripts/check_unused_patterns.py --fail-on-unused
-			- run: python scripts/find_unowned_paths.py --fail-on-unowned
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest
+      - run: python scripts/check_unused_patterns.py --fail-on-unused
+      - run: python scripts/find_unowned_paths.py --fail-on-unowned
 ```
 
 For very large repositories, add `--restrict-to-targets` and `--since` flags to `suggest_owners.py` to keep execution time predictable.

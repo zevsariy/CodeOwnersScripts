@@ -4,7 +4,7 @@ import argparse
 import sys
 from contextlib import ExitStack
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -12,6 +12,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from codeowners_tools.analysis import find_unowned_paths, load_entries_and_repo_files
 from codeowners_tools.git_activity import build_activity_index, suggest_owners_for_paths
+from codeowners_tools.groups import GroupConfigError, load_group_definitions
 from codeowners_tools.remote import prepare_repository
 
 
@@ -37,6 +38,11 @@ def parse_args() -> argparse.Namespace:
         default="CODEOWNERS",
         type=Path,
         help="Path to the CODEOWNERS file relative to the repository root.",
+    )
+    parser.add_argument(
+        "--group-config",
+        type=Path,
+        help="Optional path to group definitions (relative to the repo when not absolute).",
     )
     parser.add_argument(
         "--paths",
@@ -73,14 +79,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def determine_targets(
-    repo_root: Path,
-    codeowners_path: Path,
+    entries: Sequence,
+    tracked_files: List[str],
     explicit_paths: Optional[List[str]],
 ) -> List[str]:
     if explicit_paths:
         return explicit_paths
 
-    entries, tracked_files = load_entries_and_repo_files(codeowners_path, repo_root)
     unowned = find_unowned_paths(entries, tracked_files)
     if not unowned:
         print("No unowned tracked paths were found; provide --paths to analyze specific targets.")
@@ -107,7 +112,24 @@ def main() -> int:
             print(f"CODEOWNERS file not found: {codeowners_path}", file=sys.stderr)
             return 2
 
-        targets = determine_targets(repo_root, codeowners_path, args.paths)
+        group_definitions = None
+        if args.group_config:
+            group_config_path = args.group_config
+            if not group_config_path.is_absolute():
+                group_config_path = repo_root / group_config_path
+            try:
+                group_definitions = load_group_definitions(group_config_path)
+            except GroupConfigError as exc:
+                print(f"Failed to load group config: {exc}", file=sys.stderr)
+                return 2
+
+        parse_result, tracked_files = load_entries_and_repo_files(
+            codeowners_path,
+            repo_root,
+            group_definitions=group_definitions,
+        )
+
+        targets = determine_targets(parse_result.entries, tracked_files, args.paths)
         if not targets:
             return 0
 

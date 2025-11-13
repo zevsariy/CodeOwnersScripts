@@ -1,6 +1,14 @@
 """Utilities for working with CODEOWNERS files."""
 
-from .codeowners import CodeownersEntry, load_codeowners, resolve_owner_for_path
+from .codeowners import (
+    CodeownersEntry,
+    CodeownersParseResult,
+    CheckDirective,
+    load_codeowners,
+    normalize_group_key,
+    parse_codeowners,
+    resolve_owner_for_path,
+)
 from .analysis import (
     find_unused_entries,
     find_unowned_paths,
@@ -10,14 +18,20 @@ from .git_activity import (
     suggest_owners_for_paths,
 )
 from .remote import prepare_repository
+from .groups import load_group_definitions
 
 __all__ = [
     "CodeownersEntry",
+    "CheckDirective",
+    "CodeownersParseResult",
     "load_codeowners",
+    "parse_codeowners",
+    "normalize_group_key",
     "resolve_owner_for_path",
     "find_unused_entries",
     "find_unowned_paths",
     "build_activity_index",
     "suggest_owners_for_paths",
     "prepare_repository",
+    "load_group_definitions",
 ]

@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 import fnmatch
 import re
 import shlex
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence, Set
 
 
 def _normalize_path(path: str) -> str:
@@ -77,24 +77,232 @@ class CodeownersEntry:
         return False
 
 
-def load_codeowners(codeowners_path: Path) -> List[CodeownersEntry]:
-    entries: List[CodeownersEntry] = []
+@dataclass
+class CheckDirective:
+    group: str
+    operator: str
+    threshold: int
+    raw: str
+    line_number: int
+    source: Path
+
+
+@dataclass
+class CodeownersParseResult:
+    entries: List[CodeownersEntry]
+    checks: List[CheckDirective]
+    groups: Dict[str, List[str]]
+
+
+@dataclass
+class _RawEntry:
+    pattern: str
+    owners: List[str]
+    line_number: int
+    source: Path
+
+
+def normalize_group_key(key: str) -> str:
+    cleaned = key.strip()
+    if cleaned.startswith("@@"):
+        cleaned = cleaned[2:]
+    elif cleaned.startswith("@"):
+        cleaned = cleaned[1:]
+    return cleaned
+
+
+def _remove_inline_comment(line: str) -> str:
+    result: List[str] = []
+    in_single = False
+    in_double = False
+    escape = False
+    for ch in line:
+        if escape:
+            result.append(ch)
+            escape = False
+            continue
+        if ch == "\\" and (in_single or in_double):
+            result.append(ch)
+            escape = True
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            result.append(ch)
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            result.append(ch)
+            continue
+        if ch == "#" and not in_single and not in_double:
+            break
+        result.append(ch)
+    return "".join(result).strip()
+
+
+def _tokenize_line(line: str) -> List[str]:
+    cleaned = _remove_inline_comment(line)
+    if not cleaned:
+        return []
+    try:
+        return shlex.split(cleaned, comments=False)
+    except ValueError:
+        return cleaned.split()
+
+
+CHECK_PATTERN = re.compile(
+    r"^Check\s*\(\s*(?P<group>@@[A-Za-z0-9_\-]+)\s*(?P<operator>>=|<=|==|!=|>|<)\s*(?P<threshold>\d+)\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_check(line: str, line_number: int, source: Path) -> Optional[CheckDirective]:
+    cleaned = _remove_inline_comment(line)
+    if not cleaned.lower().startswith("check"):
+        return None
+    match = CHECK_PATTERN.match(cleaned)
+    if not match:
+        return CheckDirective(
+            group="",
+            operator="",
+            threshold=0,
+            raw=cleaned,
+            line_number=line_number,
+            source=source,
+        )
+    raw_group = match.group("group")
+    operator = match.group("operator")
+    threshold = int(match.group("threshold"))
+    return CheckDirective(
+        group=normalize_group_key(raw_group),
+        operator=operator,
+        threshold=threshold,
+        raw=cleaned,
+        line_number=line_number,
+        source=source,
+    )
+
+
+def _resolve_group(name: str, definitions: Dict[str, Sequence[str]], seen: Optional[Set[str]] = None) -> List[str]:
+    normalized = normalize_group_key(name)
+    if seen is None:
+        seen = set()
+    if normalized in seen:
+        raise ValueError(f"Detected recursive definition for @@{normalized}")
+    seen.add(normalized)
+    tokens = list(definitions.get(normalized, []))
+    expanded: List[str] = []
+    for token in tokens:
+        if token.startswith("@@"):
+            expanded.extend(_resolve_group(token, definitions, seen))
+        else:
+            expanded.append(token)
+    seen.remove(normalized)
+    return expanded
+
+
+def _expand_owner_tokens(tokens: Sequence[str], definitions: Dict[str, Sequence[str]]) -> List[str]:
+    expanded: List[str] = []
+    for token in tokens:
+        if token.startswith("@@"):
+            group_name = normalize_group_key(token)
+            if group_name in definitions:
+                expanded.extend(_resolve_group(group_name, definitions))
+            else:
+                expanded.append(token)
+        else:
+            expanded.append(token)
+    return expanded
+
+
+def _merge_group_definitions(
+    provided: Optional[Dict[str, Sequence[str]]],
+    inline: Dict[str, List[str]],
+) -> Dict[str, List[str]]:
+    merged: Dict[str, List[str]] = {}
+    if provided:
+        for key, values in provided.items():
+            normalized = normalize_group_key(key)
+            merged[normalized] = list(values)
+    for key, values in inline.items():
+        merged[normalize_group_key(key)] = list(values)
+    return merged
+
+
+def parse_codeowners(
+    codeowners_path: Path,
+    *,
+    group_definitions: Optional[Dict[str, Sequence[str]]] = None,
+) -> CodeownersParseResult:
+    raw_entries: List[_RawEntry] = []
+    inline_groups: Dict[str, List[str]] = {}
+    checks: List[CheckDirective] = []
+
     with codeowners_path.open("r", encoding="utf-8") as handle:
         for index, line in enumerate(handle, start=1):
             stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
+            if not stripped:
                 continue
-            try:
-                parts = shlex.split(line, comments=False)
-            except ValueError:
-                # Fallback to plain split if shlex cannot parse
-                parts = line.split()
+            if stripped.startswith("#"):
+                continue
+            if stripped in {"{", "}"}:
+                continue
+
+            if stripped.lower().startswith("check"):
+                check = _parse_check(line, index, codeowners_path)
+                if check:
+                    checks.append(check)
+                continue
+
+            if stripped.startswith("@@") and (":" in stripped or "=" in stripped) and stripped.split()[0].startswith("@@"):
+                delimiter = ":" if ":" in stripped else "="
+                name, _, remainder = stripped.partition(delimiter)
+                owners_tokens = _tokenize_line(remainder)
+                inline_groups[name.strip()] = owners_tokens
+                continue
+
+            parts = _tokenize_line(line)
             if len(parts) < 2:
                 continue
-            pattern, *owners = parts
-            entry = CodeownersEntry(pattern=pattern, owners=owners, line_number=index, source=codeowners_path)
-            entries.append(entry)
-    return entries
+            pattern, owners_tokens = parts[0], parts[1:]
+            raw_entries.append(
+                _RawEntry(
+                    pattern=pattern,
+                    owners=owners_tokens,
+                    line_number=index,
+                    source=codeowners_path,
+                )
+            )
+
+    merged_groups = _merge_group_definitions(group_definitions, inline_groups)
+
+    resolved_groups: Dict[str, List[str]] = {}
+    for key in merged_groups:
+        normalized = normalize_group_key(key)
+        try:
+            resolved_groups[normalized] = _resolve_group(key, merged_groups)
+        except ValueError:
+            resolved_groups[normalized] = list(merged_groups[key])
+
+    entries: List[CodeownersEntry] = []
+    for raw_entry in raw_entries:
+        owners = _expand_owner_tokens(raw_entry.owners, merged_groups)
+        entry = CodeownersEntry(
+            pattern=raw_entry.pattern,
+            owners=owners,
+            line_number=raw_entry.line_number,
+            source=raw_entry.source,
+        )
+        entries.append(entry)
+
+    return CodeownersParseResult(entries=entries, checks=checks, groups=resolved_groups)
+
+
+def load_codeowners(
+    codeowners_path: Path,
+    *,
+    group_definitions: Optional[Dict[str, Sequence[str]]] = None,
+) -> List[CodeownersEntry]:
+    return parse_codeowners(codeowners_path, group_definitions=group_definitions).entries
 
 
 def resolve_owner_for_path(entries: Iterable[CodeownersEntry], path: str) -> Optional[CodeownersEntry]:

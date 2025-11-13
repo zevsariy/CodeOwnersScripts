@@ -1,0 +1,76 @@
+# Example CODEOWNERS configuration demonstrating advanced patterns.
+# Lines are evaluated top-to-bottom; the last matching pattern wins.
+
+# Global fallback owner for any file not matched below.
+* @core-team
+
+# Root-level files.
+/README.md @docs-team
+/CONTRIBUTING.md @docs-team
+/.github/workflows/ @devops-team
+
+# Language-specific globs.
+*.py @backend-leads
+*.ts @frontend-leads
+*.css @frontend-guild
+
+# Scoped patterns override broader globs.
+/apps/mobile/** @mobile-team
+/apps/mobile/android/** @android-guild
+/apps/mobile/ios/** @ios-guild
+/apps/web/** @frontend-leads @ux-writers
+
+# Ignore generated artifacts by excluding the build directory.
+/build/ @devops-team
+
+# Service-specific owners.
+/services/search-api/** @search-api-team
+/services/search-api/config/** @search-platform
+/services/payments/** @payments-team
+/services/payments/migrations/** @payments-team @dba-team
+/services/payments/integrations/ @payments-integrations
+
+# Library shared across services (files only, not vendor folder).
+/lib/**/*.py @platform-architecture
+/lib/vendor/** @third-party-relations
+
+# Docs ownership with combination of languages.
+/docs/ @docs-team @tech-writers
+/docs/api/** @developer-relations
+/docs/api/payment*.md @payments-team
+
+# Data pipelines.
+/data/** @data-eng @analytics
+/data/airflow/dags/** @data-ops
+
+# Terraform and cloud infra.
+/infrastructure/** @cloud-center
+/infrastructure/aws/** @cloud-center @security
+/infrastructure/aws/accounts/prod/** @security @executive-approvals
+
+# Security-sensitive files.
+SECURITY.md @security
+scripts/secrets/** @security-tooling
+
+# Override tests to ensure QA visibility.
+**/tests/** @qa-team
+**/tests/performance/** @perf-team
+
+# Example of negated pattern: exclude staging configs from ops team ownership.
+!config/staging/**
+config/** @sre-team
+config/staging/** @staging-champions
+
+# Tooling directories.
+/tools/** @dev-tools
+/tools/linters/** @dev-tools @quality-guild
+
+# Monorepo packages with individual maintainers.
+/packages/core/** @core-package-owners
+/packages/core/examples/** @developer-relations
+/packages/ui/** @ui-components
+/packages/ui/storybook/** @design-system
+
+# People responsible for repository configuration.
+.gitignore @devops-team @core-team
+CODEOWNERS @core-team @compliance

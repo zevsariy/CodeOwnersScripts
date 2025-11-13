@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from .codeowners import CodeownersEntry, load_codeowners
+from .codeowners import CodeownersEntry, CodeownersParseResult, parse_codeowners
 from .repo import list_tracked_files
 
 
@@ -40,7 +40,12 @@ def find_unowned_paths(entries: Sequence[CodeownersEntry], repo_files: Iterable[
     return sorted(path for path, entry in report.assignments.items() if entry is None)
 
 
-def load_entries_and_repo_files(codeowners_path: Path, repo_root: Path) -> Tuple[List[CodeownersEntry], List[str]]:
-    entries = load_codeowners(codeowners_path)
+def load_entries_and_repo_files(
+    codeowners_path: Path,
+    repo_root: Path,
+    *,
+    group_definitions: Optional[Dict[str, Sequence[str]]] = None,
+) -> Tuple[CodeownersParseResult, List[str]]:
+    parse_result = parse_codeowners(codeowners_path, group_definitions=group_definitions)
     files = list_tracked_files(repo_root)
-    return entries, files
+    return parse_result, files

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import operator
 import sys
 from collections import Counter
 from contextlib import ExitStack
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -13,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from codeowners_tools.analysis import find_unowned_paths, find_unused_entries, load_entries_and_repo_files
 from codeowners_tools.git_activity import build_activity_index, suggest_owners_for_paths
+from codeowners_tools.groups import GroupConfigError, load_group_definitions
 from codeowners_tools.remote import prepare_repository
 
 
@@ -38,6 +40,11 @@ def parse_args() -> argparse.Namespace:
         default="CODEOWNERS",
         type=Path,
         help="Path to the CODEOWNERS file relative to the repository root.",
+    )
+    parser.add_argument(
+        "--group-config",
+        type=Path,
+        help="Optional path to group definitions (relative to the repo when not absolute).",
     )
     parser.add_argument(
         "--suggest-limit",
@@ -80,6 +87,30 @@ def _resolve_paths(unowned: List[str], limit: int) -> List[str]:
     return unowned[:limit]
 
 
+_COMPARE = {
+    ">": operator.gt,
+    ">=": operator.ge,
+    "<": operator.lt,
+    "<=": operator.le,
+    "==": operator.eq,
+    "!=": operator.ne,
+}
+
+
+def _evaluate_check(check, groups: Dict[str, List[str]]):
+    if not check.group:
+        return "unparsed", None, False
+    members = groups.get(check.group)
+    if members is None:
+        return "missing", None, False
+    compare = _COMPARE.get(check.operator)
+    if compare is None:
+        return "unsupported", len(members), False
+    size = len(members)
+    passed = compare(size, check.threshold)
+    return ("pass" if passed else "fail"), size, passed
+
+
 def main() -> int:
     args = parse_args()
 
@@ -100,10 +131,27 @@ def main() -> int:
             print(f"CODEOWNERS file not found: {codeowners_path}", file=sys.stderr)
             return 2
 
-        entries, tracked_files = load_entries_and_repo_files(codeowners_path, repo_root)
+        group_definitions = None
+        if args.group_config:
+            group_config_path = args.group_config
+            if not group_config_path.is_absolute():
+                group_config_path = repo_root / group_config_path
+            try:
+                group_definitions = load_group_definitions(group_config_path)
+            except GroupConfigError as exc:
+                print(f"Failed to load group config: {exc}", file=sys.stderr)
+                return 2
 
+        parse_result, tracked_files = load_entries_and_repo_files(
+            codeowners_path,
+            repo_root,
+            group_definitions=group_definitions,
+        )
+
+        entries = parse_result.entries
         unused = find_unused_entries(entries, tracked_files)
         unowned = find_unowned_paths(entries, tracked_files)
+        check_summaries = [(_evaluate_check(check, parse_result.groups), check) for check in parse_result.checks]
 
         print("=== CODEOWNERS Audit ===")
         print(f"Repository root: {repo_root}")
@@ -124,6 +172,25 @@ def main() -> int:
         else:
             print("Unused patterns: none ✅")
         print()
+
+        if check_summaries:
+            print("Guardrail checks:")
+            for (status, size, passed), check in check_summaries:
+                if status == "pass":
+                    label = "pass"
+                elif status == "fail":
+                    label = "FAIL"
+                elif status == "missing":
+                    label = "unresolved group"
+                elif status == "unsupported":
+                    label = "unsupported operator"
+                else:
+                    label = status
+                member_text = "?" if size is None else str(size)
+                print(
+                    f"  - {check.raw} -> {label} (members: {member_text}, target: {check.threshold})"
+                )
+            print()
 
         if unowned:
             print(f"Uncovered files: {len(unowned)}")
@@ -166,17 +233,30 @@ def main() -> int:
         else:
             print("Uncovered files: none ✅")
 
+        has_check_failures = any(
+            status in {"fail", "missing", "unsupported", "unparsed"}
+            for (status, _, _), _ in check_summaries
+        )
+
         print("\nNext actions:")
-        if unused or unowned:
+        if unused or unowned or has_check_failures:
             if unused:
                 print("  - prune or fix unused patterns above")
             if unowned:
                 print("  - add CODEOWNERS entries for uncovered paths")
                 print("  - reach out to suggested owners to confirm responsibility")
+            if has_check_failures:
+                print("  - resolve guardrail checks that are failing or unresolved")
         else:
-            print("  - CODEOWNERS file covers all tracked files and patterns in use 🎉")
+            if check_summaries:
+                if check_summaries and all(status == "pass" for (status, _, _), _ in check_summaries):
+                    print("  - all guardrail checks satisfied 🛡️")
+                else:
+                    print("  - review guardrail check warnings")
+            else:
+                print("  - CODEOWNERS file covers all tracked files and patterns in use 🎉")
 
-        if args.fail_on_issues and (unused or unowned):
+        if args.fail_on_issues and (unused or unowned or has_check_failures):
             return 1
         return 0
 
