@@ -1,0 +1,68 @@
+from pathlib import Path
+from collections import Counter
+
+from codeowners_tools.codeowners import CodeownersEntry, resolve_owner_for_path
+from codeowners_tools.analysis import find_unowned_paths, find_unused_entries
+from codeowners_tools.git_activity import GitActivityIndex, suggest_owners_for_paths
+
+
+def make_entry(pattern: str, owners: list[str]) -> CodeownersEntry:
+    return CodeownersEntry(pattern=pattern, owners=owners, line_number=1, source=Path("CODEOWNERS"))
+
+
+def test_codeowners_matching_prefers_last_match() -> None:
+    entries = [
+        make_entry("*.py", ["@python-team"]),
+        make_entry("src/app.py", ["@alice"]),
+    ]
+    match = resolve_owner_for_path(entries, "src/app.py")
+    assert match is not None
+    assert match.owners == ["@alice"]
+
+
+def test_find_unused_entries_detects_unmatched_patterns() -> None:
+    entries = [
+        make_entry("*.py", ["@team"]),
+        make_entry("docs/", ["@docs"]),
+    ]
+    repo_files = ["main.py", "README.md"]
+    unused = find_unused_entries(entries, repo_files)
+    assert len(unused) == 1
+    assert unused[0].pattern == "docs/"
+
+
+def test_find_unowned_paths_returns_sorted_file_list() -> None:
+    entries = [
+        make_entry("src/**", ["@backend"]),
+        make_entry("README.md", ["@docs"]),
+    ]
+    repo_files = ["src/app.py", "docs/guide.md", "README.md"]
+    unowned = find_unowned_paths(entries, repo_files)
+    assert unowned == ["docs/guide.md"]
+
+
+def test_suggest_owners_for_file_and_directory() -> None:
+    index = GitActivityIndex(
+        file_commits={
+            "src/app.py": Counter({"Alice <alice@example.com>": 5, "Bob <bob@example.com>": 2}),
+        },
+        directory_commits={
+            "": Counter({"Alice <alice@example.com>": 7, "Bob <bob@example.com>": 3}),
+            "src": Counter({"Alice <alice@example.com>": 6, "Bob <bob@example.com>": 3}),
+        },
+    )
+
+    suggestions = suggest_owners_for_paths(index, ["src/app.py", "src/"])
+    assert len(suggestions) == 2
+
+    file_suggestion = suggestions[0]
+    assert file_suggestion.path == "src/app.py"
+    assert not file_suggestion.is_directory
+    assert file_suggestion.candidates[0].identity == "Alice <alice@example.com>"
+    assert file_suggestion.candidates[0].commits == 5
+
+    dir_suggestion = suggestions[1]
+    assert dir_suggestion.path == "src/"
+    assert dir_suggestion.is_directory
+    assert dir_suggestion.candidates[0].identity == "Alice <alice@example.com>"
+    assert dir_suggestion.candidates[0].commits == 6
