@@ -4,7 +4,7 @@ import operator
 import time
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .analysis import find_unowned_paths, find_unused_entries, load_entries_and_repo_files
@@ -20,7 +20,13 @@ from .codeowners import (
     GroupDefinition,
     StandaloneEntryItem,
 )
-from .git_activity import build_activity_index, suggest_owners_for_paths, PathOwnershipSuggestion
+from .git_activity import (
+    build_activity_index,
+    suggest_owners_for_paths,
+    PathOwnershipSuggestion,
+    CandidateSuggestion,
+    GitActivityIndex,
+)
 
 
 @dataclass
@@ -44,6 +50,37 @@ class GuardrailStatus:
 
 
 @dataclass
+class MaskSuggestion:
+    pattern: str
+    base_path: str
+    is_directory: bool
+    depth: int
+    unowned_count: int
+    unowned_paths: List[str]
+    total_commits: int
+    candidates: List[CandidateSuggestion]
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "pattern": self.pattern,
+            "base_path": self.base_path,
+            "is_directory": self.is_directory,
+            "depth": self.depth,
+            "unowned_count": self.unowned_count,
+            "unowned_paths": list(self.unowned_paths),
+            "total_commits": self.total_commits,
+            "candidates": [
+                {
+                    "identity": candidate.identity,
+                    "commits": candidate.commits,
+                    "share": candidate.share,
+                }
+                for candidate in self.candidates
+            ],
+        }
+
+
+@dataclass
 class AuditResult:
     repo_root: Path
     codeowners_path: Path
@@ -57,6 +94,7 @@ class AuditResult:
     guardrails: List[GuardrailStatus]
     suggestions: List[PathOwnershipSuggestion]
     suggestion_targets: List[str]
+    mask_suggestions: List[MaskSuggestion]
     config: Dict[str, object]
     duration_seconds: float
 
@@ -75,6 +113,11 @@ class AuditResult:
     @property
     def has_issues(self) -> bool:
         return bool(self.unused_entries or self.unowned_paths or self.has_guardrail_failures)
+
+    @property
+    def used_entries(self) -> List[CodeownersEntry]:
+        unused_ids = {id(entry) for entry in self.unused_entries}
+        return [entry for entry in self.parse_result.entries if id(entry) not in unused_ids]
 
     def to_custom_codeowners(
         self,
@@ -233,6 +276,16 @@ class AuditResult:
                 for suggestion in self.suggestions
             ],
             "suggestion_targets": self.suggestion_targets,
+            "mask_suggestions": [suggestion.to_dict() for suggestion in self.mask_suggestions],
+            "used_entries": [
+                {
+                    "pattern": entry.pattern,
+                    "owners": entry.owners,
+                    "line_number": entry.line_number,
+                    "source": str(entry.source),
+                }
+                for entry in self.used_entries
+            ],
             "groups": self.parse_result.groups,
         }
 
@@ -291,6 +344,125 @@ def _determine_suggestion_targets(
     return []
 
 
+@dataclass
+class _MaskPatternAccumulator:
+    base_path: str
+    is_directory: bool
+    depth: int
+    paths: set[str]
+
+
+def _normalize_repo_path(path: str) -> str:
+    return PurePosixPath(path).as_posix().strip("/")
+
+
+def _mask_pattern_candidates(
+    path: str,
+    mode: str,
+    depth_limit: int,
+) -> List[Tuple[str, str, int, bool]]:
+    normalized = _normalize_repo_path(path)
+    if not normalized:
+        return []
+
+    segments = [segment for segment in normalized.split("/") if segment]
+    if not segments:
+        return []
+
+    file_name = segments[-1]
+    dir_segments = segments[:-1]
+    results: List[Tuple[str, str, int, bool]] = []
+
+    if dir_segments:
+        max_depth = len(dir_segments) if depth_limit <= 0 else min(depth_limit, len(dir_segments))
+        for depth in range(1, max_depth + 1):
+            prefix_segments = dir_segments[:depth]
+            base_path = "/".join(prefix_segments)
+            if mode == "file":
+                extension = ""
+                if "." in file_name:
+                    extension = file_name[file_name.rfind(".") :]
+                if extension:
+                    pattern = f"/{base_path}/*{extension}" if base_path else f"/*{extension}"
+                else:
+                    pattern = f"/{base_path}/*" if base_path else "/*"
+            else:  # directory
+                pattern = f"/{base_path}/*" if base_path else "/*"
+            results.append((pattern, base_path, depth, True))
+
+    if mode == "file":
+        base_path = "/".join(segments)
+        pattern = f"/{base_path}" if base_path else "/"
+        results.append((pattern, base_path, len(segments), False))
+
+    return results
+
+
+def _collect_mask_patterns(
+    unowned_paths: Sequence[str],
+    mode: str,
+    depth_limit: int,
+) -> Dict[str, _MaskPatternAccumulator]:
+    accumulator: Dict[str, _MaskPatternAccumulator] = {}
+    for path in unowned_paths:
+        candidates = _mask_pattern_candidates(path, mode, depth_limit)
+        for pattern, base_path, depth, is_directory in candidates:
+            entry = accumulator.get(pattern)
+            if entry is None:
+                entry = _MaskPatternAccumulator(
+                    base_path=base_path,
+                    is_directory=is_directory,
+                    depth=depth,
+                    paths=set(),
+                )
+                accumulator[pattern] = entry
+            else:
+                entry.depth = min(entry.depth, depth)
+            entry.paths.add(_normalize_repo_path(path))
+    return accumulator
+
+
+def _build_mask_suggestions(
+    index: Optional[GitActivityIndex],
+    pattern_accumulator: Dict[str, _MaskPatternAccumulator],
+    limit: int,
+    min_commits: int,
+) -> List[MaskSuggestion]:
+    if not pattern_accumulator:
+        return []
+    if index is None:
+        return []
+
+    suggestions: List[MaskSuggestion] = []
+    for pattern, data in pattern_accumulator.items():
+        base_path = data.base_path
+        if data.is_directory:
+            target = f"{base_path}/" if base_path else "/"
+        else:
+            target = base_path
+        suggestion = suggest_owners_for_paths(
+            index,
+            [target],
+            limit=limit,
+            min_commits=min_commits,
+        )[0]
+        suggestions.append(
+            MaskSuggestion(
+                pattern=pattern,
+                base_path=base_path,
+                is_directory=data.is_directory,
+                depth=data.depth,
+                unowned_count=len(data.paths),
+                unowned_paths=sorted(data.paths),
+                total_commits=suggestion.total_commits,
+                candidates=list(suggestion.candidates),
+            )
+        )
+
+    suggestions.sort(key=lambda item: (-item.unowned_count, item.pattern))
+    return suggestions
+
+
 def generate_audit(
     repo_root: Path,
     codeowners_path: Path,
@@ -300,6 +472,8 @@ def generate_audit(
     max_unowned: int = 20,
     suggest_limit: int = 3,
     min_commits: int = 1,
+    mask_mode: str = "directory",
+    mask_depth: int = 3,
     include_merges: bool = False,
     since: Optional[str] = None,
     restrict_to_targets: bool = False,
@@ -321,6 +495,11 @@ def generate_audit(
 
     guardrails = evaluate_guardrails(parse_result.checks, parse_result.groups)
 
+    normalized_mask_mode = mask_mode if mask_mode in {"directory", "file"} else "directory"
+    depth_limit = max(mask_depth, 0)
+
+    mask_patterns = _collect_mask_patterns(unowned_paths, normalized_mask_mode, depth_limit)
+
     suggestion_targets = _determine_suggestion_targets(
         unowned_paths,
         max_unowned,
@@ -328,17 +507,41 @@ def generate_audit(
     )
 
     suggestions: List[PathOwnershipSuggestion] = []
-    if suggestion_targets:
-        paths_for_log = suggestion_targets if restrict_to_targets else None
+    mask_suggestions: List[MaskSuggestion] = []
+
+    needs_activity_index = bool(suggestion_targets) or bool(mask_patterns)
+    index: Optional[GitActivityIndex] = None
+
+    if needs_activity_index:
+        if restrict_to_targets:
+            if suggestion_targets:
+                paths_for_log: Optional[Sequence[str]] = suggestion_targets
+            elif unowned_paths:
+                paths_for_log = unowned_paths
+            else:
+                paths_for_log = None
+        else:
+            paths_for_log = None
+
         index = build_activity_index(
             repo_root=repo_root,
             include_merges=include_merges,
             since=since,
             paths=paths_for_log,
         )
+
+    if suggestion_targets and index is not None:
         suggestions = suggest_owners_for_paths(
             index,
             suggestion_targets,
+            limit=suggest_limit,
+            min_commits=min_commits,
+        )
+
+    if mask_patterns and index is not None:
+        mask_suggestions = _build_mask_suggestions(
+            index,
+            mask_patterns,
             limit=suggest_limit,
             min_commits=min_commits,
         )
@@ -358,10 +561,13 @@ def generate_audit(
         guardrails=guardrails,
         suggestions=suggestions,
         suggestion_targets=suggestion_targets,
+        mask_suggestions=mask_suggestions,
         config={
             "max_unowned": max_unowned,
             "suggest_limit": suggest_limit,
             "min_commits": min_commits,
+            "mask_mode": normalized_mask_mode,
+            "mask_depth": depth_limit,
             "include_merges": include_merges,
             "since": since,
             "restrict_to_targets": restrict_to_targets,

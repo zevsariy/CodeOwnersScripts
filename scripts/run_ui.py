@@ -37,6 +37,8 @@ def _default_form_values() -> Dict[str, str]:
         "max_unowned": "20",
         "suggest_limit": "3",
         "min_commits": "1",
+        "mask_mode": "directory",
+        "mask_depth": "3",
         "since": "",
         "include_merges": "",
     }
@@ -49,6 +51,10 @@ def _escape(value: object) -> str:
 def _render_form(values: Dict[str, str]) -> str:
     def checked(field: str) -> str:
         return "checked" if values.get(field) else ""
+
+    mask_mode = values.get("mask_mode", "directory")
+    directory_selected = "selected" if mask_mode == "directory" else ""
+    file_selected = "selected" if mask_mode == "file" else ""
 
     return f"""
     <form method=\"post\" class=\"form\">
@@ -65,8 +71,15 @@ def _render_form(values: Dict[str, str]) -> str:
       <fieldset>
         <legend>Suggestions</legend>
         <label>Max uncovered paths<br><input name=\"max_unowned\" type=\"number\" min=\"0\" value=\"{_escape(values.get('max_unowned', '20'))}\"></label>
-        <label>Suggested owners per target<br><input name=\"suggest_limit\" type=\"number\" min=\"1\" value=\"{_escape(values.get('suggest_limit', '3'))}\"></label>
+        <label>Top owners per suggestion<br><input name=\"suggest_limit\" type=\"number\" min=\"1\" value=\"{_escape(values.get('suggest_limit', '3'))}\"></label>
         <label>Minimum commits per owner<br><input name=\"min_commits\" type=\"number\" min=\"1\" value=\"{_escape(values.get('min_commits', '1'))}\"></label>
+        <label>Mask target type<br>
+          <select name=\"mask_mode\">
+            <option value=\"directory\" {directory_selected}>Directories (&hellip;/*)</option>
+            <option value=\"file\" {file_selected}>Files (&hellip;/*.ext)</option>
+          </select>
+        </label>
+        <label>Mask depth (levels)<br><input name=\"mask_depth\" type=\"number\" min=\"0\" value=\"{_escape(values.get('mask_depth', '3'))}\" placeholder=\"0 = full depth\"></label>
         <label>Git --since filter<br><input name=\"since\" type=\"text\" value=\"{_escape(values.get('since', ''))}\" placeholder=\"e.g. 90 days ago\"></label>
         <label class=\"checkbox\"><input type=\"checkbox\" name=\"include_merges\" {checked('include_merges')}>Include merge commits</label>
       </fieldset>
@@ -112,6 +125,19 @@ def _render_unused(audit: AuditResult) -> str:
         return "<p>No unused patterns.</p>"
     rows = []
     for entry in audit.unused_entries:
+        owners = " ".join(entry.owners)
+        rows.append(
+            f"<tr><td>{_escape(entry.pattern)}</td><td>{_escape(owners)}</td><td>{_escape(entry.source.name)}</td><td>{_escape(entry.line_number)}</td></tr>"
+        )
+    return """<table class=\"results-table\"><thead><tr><th>Pattern</th><th>Owners</th><th>File</th><th>Line</th></tr></thead><tbody>""" + "".join(rows) + "</tbody></table>"
+
+
+def _render_used(audit: AuditResult) -> str:
+    used = audit.used_entries
+    if not used:
+        return "<p>No active patterns matched tracked files.</p>"
+    rows = []
+    for entry in used:
         owners = " ".join(entry.owners)
         rows.append(
             f"<tr><td>{_escape(entry.pattern)}</td><td>{_escape(owners)}</td><td>{_escape(entry.source.name)}</td><td>{_escape(entry.line_number)}</td></tr>"
@@ -165,6 +191,55 @@ def _render_suggestions(audit: AuditResult) -> str:
         blocks.append(
             f"<section class=\"suggestion\"><h4>{_escape(header)}: {_escape(suggestion.path)} (total commits: {_escape(suggestion.total_commits)})</h4>{table}{extra_note}</section>"
         )
+    return "".join(blocks)
+
+
+def _render_mask_suggestions(audit: AuditResult, cached: Optional[list] = None) -> str:
+    suggestions = list(cached if cached is not None else getattr(audit, "mask_suggestions", []) or [])
+    if not suggestions:
+        return "<p>No mask suggestions generated. Adjust depth or target type to explore new patterns.</p>"
+
+    blocks = []
+    for suggestion in suggestions:
+        scope = "Directory" if suggestion.is_directory else "File"
+        candidate_rows = []
+        for candidate in suggestion.candidates:
+            share = f"{candidate.share * 100:.1f}%" if suggestion.total_commits else "0.0%"
+            candidate_rows.append(
+                f"<tr><td>{_escape(candidate.identity)}</td><td>{_escape(candidate.commits)}</td><td>{_escape(share)}</td></tr>"
+            )
+        if not candidate_rows:
+            candidate_rows.append("<tr><td colspan=3 class=\"muted\">No contributors with enough commits.</td></tr>")
+        table = (
+            """<table class=\"results-table\"><thead><tr><th>Identity</th><th>Commits</th><th>Share</th></tr></thead><tbody>"""
+            + "".join(candidate_rows)
+            + "</tbody></table>"
+        )
+        paths_list = "".join(f"<li>{_escape(path)}</li>" for path in suggestion.unowned_paths)
+        coverage_note = (
+            f"<details class=\"mask-paths\"><summary>Covers {suggestion.unowned_count} uncovered path(s)</summary><ul>{paths_list}</ul></details>"
+            if suggestion.unowned_paths
+            else ""
+        )
+        block_html = (
+            """
+            <section class=\"suggestion\">
+                <h4>{header}: {pattern}</h4>
+                <p class=\"muted\">Depth level {depth} · Total commits: {commits}</p>
+                {coverage}
+                {table}
+            </section>
+            """.format(
+                header=_escape(scope),
+                pattern=_escape(suggestion.pattern),
+                depth=_escape(suggestion.depth),
+                commits=_escape(suggestion.total_commits),
+                coverage=coverage_note,
+                table=table,
+            )
+        )
+        blocks.append(block_html)
+
     return "".join(blocks)
 
 
@@ -272,6 +347,8 @@ def _render_result(audit: AuditResult, export_token: Optional[str] = None, expor
     issues = audit.has_issues
     guardrail_issues = sum(1 for status in audit.guardrails if status.status != "pass")
     suggestion_count = len(audit.suggestions)
+    mask_suggestions = list(getattr(audit, "mask_suggestions", []) or [])
+    mask_suggestion_count = len(mask_suggestions)
 
     metrics = [
         ("Tracked files", audit.tracked_files_count),
@@ -280,6 +357,7 @@ def _render_result(audit: AuditResult, export_token: Optional[str] = None, expor
         ("Guardrail issues", guardrail_issues),
         ("Suggestion targets", len(audit.suggestion_targets)),
         ("Generated suggestions", suggestion_count),
+        ("Mask suggestions", mask_suggestion_count),
         ("Duration (s)", f"{audit.duration_seconds:.3f}"),
     ]
     metrics_html = "".join(
@@ -567,6 +645,12 @@ def _render_result(audit: AuditResult, export_token: Optional[str] = None, expor
             </details>
         </section>
         <section class=\"card\">
+            <details>
+                <summary>Active patterns ({_escape(len(audit.used_entries))})</summary>
+                {_render_used(audit)}
+            </details>
+        </section>
+        <section class=\"card\">
             <details open>
                 <summary>Guardrail checks ({_escape(len(audit.guardrails))})</summary>
                 {_render_guardrails(audit)}
@@ -590,11 +674,19 @@ def _render_result(audit: AuditResult, export_token: Optional[str] = None, expor
                 {_render_suggestions(audit)}
             </details>
         </section>
+        <section class=\"card\">
+            <details open>
+                <summary>Mask suggestions ({_escape(mask_suggestion_count)})</summary>
+                {_render_mask_suggestions(audit, cached=mask_suggestions)}
+            </details>
+        </section>
         {export_section}
     """
 
 
-def _base_layout(content: str, values: Dict[str, str], error: Optional[str]) -> str:
+def _base_layout(content: Optional[str], values: Dict[str, str], error: Optional[str]) -> str:
+    if content is None:
+        content = ""
     banner = "<div class=\"error\">" + _escape(error) + "</div>" if error else ""
     style = """
     <style>
@@ -791,6 +883,10 @@ def _run_audit_from_form(values: Dict[str, str]) -> AuditResult:
     max_unowned = _parse_int(values, "max_unowned", 20)
     suggest_limit = _parse_int(values, "suggest_limit", 3)
     min_commits = _parse_int(values, "min_commits", 1)
+    mask_mode = values.get("mask_mode", "directory").strip().lower()
+    if mask_mode not in {"directory", "file"}:
+        mask_mode = "directory"
+    mask_depth = _parse_int(values, "mask_depth", 3)
 
     with ExitStack() as stack:
         repo_path = prepare_repository(stack, repo_root, repo_url, branch)
@@ -809,6 +905,8 @@ def _run_audit_from_form(values: Dict[str, str]) -> AuditResult:
             max_unowned=max_unowned,
             suggest_limit=suggest_limit,
             min_commits=min_commits,
+            mask_mode=mask_mode,
+            mask_depth=mask_depth,
             include_merges=include_merges,
             since=since,
         )
@@ -864,13 +962,17 @@ class AuditDashboardHandler(BaseHTTPRequestHandler):
         values.update(self._read_form())
 
         error: Optional[str] = None
-        content = ""
+        content: Optional[str] = ""
         try:
             audit = _run_audit_from_form(values)
             token, filename = _register_export(audit)
-            content = _render_result(audit, export_token=token, export_filename=filename)
+            rendered = _render_result(audit, export_token=token, export_filename=filename)
+            if rendered is None:
+                raise RuntimeError("Audit renderer returned no content")
+            content = rendered
         except Exception as exc:  # pragma: no cover - surface errors to UI
             error = str(exc)
+            print(f"[audit-ui] Failed to generate audit: {exc!r}", file=sys.stderr)
             _clear_export()
         page = _base_layout(content, values, error)
         self._write_response(page)

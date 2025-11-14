@@ -189,7 +189,28 @@ Check (@@Platform >= 3)
     assert first_suggestion.candidates
     assert first_suggestion.candidates[0].identity == "Test User <test@example.com>"
 
+    assert audit.mask_suggestions
+    mask_patterns = [suggestion.pattern for suggestion in audit.mask_suggestions]
+    assert "/infra/*" in mask_patterns
+    first_mask = audit.mask_suggestions[0]
+    assert first_mask.candidates
+    assert first_mask.candidates[0].identity == "Test User <test@example.com>"
+
     exported = audit.to_custom_codeowners()
     assert "@@Platform: @alice @bob" in exported
     assert "infra/server.tf" not in exported  # path stays uncovered, not a pattern
     assert "Check (@@Platform >= 3)" in exported
+
+    audit_file_masks = generate_audit(
+        repo_root=repo,
+        codeowners_path=repo / "CODEOWNERS",
+        max_unowned=5,
+        suggest_limit=2,
+        mask_mode="file",
+        mask_depth=2,
+    )
+    file_patterns = [suggestion.pattern for suggestion in audit_file_masks.mask_suggestions]
+    assert "/infra/*.tf" in file_patterns
+    exact_entry = next(s for s in audit_file_masks.mask_suggestions if s.pattern == "/infra/server.tf")
+    assert exact_entry.candidates
+    assert exact_entry.candidates[0].identity == "Test User <test@example.com>"
