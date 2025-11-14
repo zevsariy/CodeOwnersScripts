@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 import sys
 import threading
 import urllib.parse
@@ -13,6 +14,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Dict, Optional
+from datetime import datetime
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -687,12 +689,53 @@ def _base_layout(content: str, values: Dict[str, str], error: Optional[str]) -> 
     """
 
 
+def _sanitize_filename_token(token: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", token.strip())
+    cleaned = cleaned.strip("_-")
+    return cleaned or fallback
+
+
+def _infer_branch(audit: AuditResult) -> str:
+    if audit.branch:
+        return audit.branch
+    repo_root = audit.repo_root
+    if repo_root and (repo_root / ".git" / "HEAD").exists():
+        try:
+            head = (repo_root / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+        except OSError:
+            return "local"
+        if head.startswith("ref:"):
+            # ref: refs/heads/main -> main
+            parts = head.split("/", 2)
+            if len(parts) >= 3:
+                return head.rsplit("/", 1)[-1]
+    return "local"
+
+
+def _infer_repo_name(audit: AuditResult) -> str:
+    if audit.repo_url:
+        parsed = urllib.parse.urlparse(audit.repo_url)
+        path = parsed.path.rstrip("/")
+        if path:
+            name = path.split("/")[-1]
+            if name.endswith(".git"):
+                name = name[:-4]
+            if name:
+                return name
+    repo_root = audit.repo_root
+    if repo_root:
+        return repo_root.name
+    return "repository"
+
+
 def _register_export(audit: AuditResult) -> tuple[str, str]:
     global LATEST_EXPORT
 
     token = uuid.uuid4().hex
-    filename_root = audit.codeowners_path.name or "CODEOWNERS"
-    filename = f"{filename_root}.generated"
+    today = datetime.now().date().isoformat()
+    branch = _sanitize_filename_token(_infer_branch(audit), "branch")
+    repo_name = _sanitize_filename_token(_infer_repo_name(audit), "repo")
+    filename = f"CODEOWNERS_{today}_{branch}_{repo_name}.generated"
     content = audit.to_custom_codeowners()
 
     with EXPORT_LOCK:
@@ -839,11 +882,19 @@ class AuditDashboardHandler(BaseHTTPRequestHandler):
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch a simple CODEOWNERS audit web UI.")
     parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
+    parser.add_argument("--port", type=int, default=8765, help="Port to listen on (default: 8765)")
     parser.add_argument(
         "--open-browser",
+        dest="open_browser",
         action="store_true",
-        help="Open the default web browser after the server starts.",
+        default=True,
+        help="Open the default web browser after the server starts (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-open-browser",
+        dest="open_browser",
+        action="store_false",
+        help="Disable automatically launching the default web browser.",
     )
     return parser.parse_args(argv)
 

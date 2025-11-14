@@ -190,6 +190,6 @@ Check (@@Platform >= 3)
     assert first_suggestion.candidates[0].identity == "Test User <test@example.com>"
 
     exported = audit.to_custom_codeowners()
-    assert "@@@Platform" in exported
+    assert "@@Platform: @alice @bob" in exported
     assert "infra/server.tf" not in exported  # path stays uncovered, not a pattern
     assert "Check (@@Platform >= 3)" in exported

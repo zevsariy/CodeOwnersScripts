@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 import fnmatch
 import re
 import shlex
-from typing import Dict, Iterable, List, Optional, Sequence, Set
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 
 def _normalize_path(path: str) -> str:
@@ -63,6 +63,10 @@ class CodeownersEntry:
     owners: List[str]
     line_number: int
     source: Path
+    block_index: Optional[int] = field(default=None, repr=False, compare=False)
+    raw_owners: List[str] = field(default_factory=list, repr=False, compare=False)
+    inline_comment: Optional[str] = field(default=None, repr=False, compare=False)
+    indent: str = field(default="", repr=False, compare=False)
     _compiled_variants: List[re.Pattern[str]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -85,6 +89,80 @@ class CheckDirective:
     raw: str
     line_number: int
     source: Path
+    block_index: Optional[int] = None
+
+
+@dataclass
+class GroupDefinition:
+    normalized_name: str
+    display_token: str
+    alias_token: str
+    members: List[str]
+    delimiter: Optional[str]
+    delimiter_attached: bool
+    comment: Optional[str]
+    line_number: int
+
+
+@dataclass
+class CommentLine:
+    text: str
+    line_number: int
+    indent: str = ""
+
+
+@dataclass
+class BlankLine:
+    line_number: int
+
+
+@dataclass
+class StandaloneEntryItem:
+    entry_index: int
+    line_number: int
+    indent: str
+    entry: Optional[CodeownersEntry] = field(default=None, repr=False, compare=False)
+
+
+@dataclass
+class CheckLineItem:
+    check_index: int
+    line_number: int
+    indent: str
+    inline_comment: Optional[str]
+    check: Optional[CheckDirective] = field(default=None, repr=False, compare=False)
+
+
+@dataclass
+class BlockItem:
+    kind: str
+    line_number: int
+    indent: str = ""
+    entry_index: Optional[int] = None
+    inline_comment: Optional[str] = None
+    pattern: Optional[str] = None
+    text: Optional[str] = None
+    check_index: Optional[int] = None
+    entry: Optional[CodeownersEntry] = field(default=None, repr=False, compare=False)
+    check: Optional[CheckDirective] = field(default=None, repr=False, compare=False)
+
+
+@dataclass
+class CodeownersBlock:
+    index: int
+    start_line: int
+    end_line: Optional[int]
+    items: List[BlockItem]
+
+
+@dataclass
+class _BlockContext:
+    index: int
+    start_line: int
+    items: List[BlockItem] = field(default_factory=list)
+
+
+LayoutItem = Union[CommentLine, BlankLine, GroupDefinition, StandaloneEntryItem, CheckLineItem, CodeownersBlock]
 
 
 @dataclass
@@ -92,14 +170,20 @@ class CodeownersParseResult:
     entries: List[CodeownersEntry]
     checks: List[CheckDirective]
     groups: Dict[str, List[str]]
+    group_definitions: List[GroupDefinition]
+    blocks: List[CodeownersBlock]
+    layout: List[LayoutItem]
 
 
 @dataclass
 class _RawEntry:
     pattern: str
-    owners: List[str]
+    owners_tokens: List[str]
     line_number: int
     source: Path
+    inline_comment: Optional[str] = None
+    block_index: Optional[int] = None
+    indent: str = ""
 
 
 def normalize_group_key(key: str) -> str:
@@ -111,32 +195,42 @@ def normalize_group_key(key: str) -> str:
     return cleaned
 
 
-def _remove_inline_comment(line: str) -> str:
-    result: List[str] = []
+def _split_content_and_comment(line: str) -> Tuple[str, Optional[str]]:
+    content_chars: List[str] = []
     in_single = False
     in_double = False
     escape = False
-    for ch in line:
+    for index, ch in enumerate(line):
         if escape:
-            result.append(ch)
+            content_chars.append(ch)
             escape = False
             continue
         if ch == "\\" and (in_single or in_double):
-            result.append(ch)
+            content_chars.append(ch)
             escape = True
             continue
         if ch == "'" and not in_double:
             in_single = not in_single
-            result.append(ch)
+            content_chars.append(ch)
             continue
         if ch == '"' and not in_single:
             in_double = not in_double
-            result.append(ch)
+            content_chars.append(ch)
             continue
         if ch == "#" and not in_single and not in_double:
-            break
-        result.append(ch)
-    return "".join(result).strip()
+            prefix = "".join(content_chars)
+            trimmed_prefix = prefix.rstrip()
+            trailing = prefix[len(trimmed_prefix) :]
+            comment = trailing + line[index:]
+            return trimmed_prefix, comment if comment else None
+        content_chars.append(ch)
+    prefix = "".join(content_chars).rstrip()
+    return prefix, None
+
+
+def _remove_inline_comment(line: str) -> str:
+    content, _ = _split_content_and_comment(line)
+    return content.strip()
 
 
 def _tokenize_line(line: str) -> List[str]:
@@ -167,10 +261,80 @@ def _coalesce_at_tokens(tokens: Sequence[str]) -> List[str]:
     return normalized
 
 
+GROUP_TRIPLE_PATTERN = re.compile(r"^(@@@[A-Za-z0-9_\-]+)(?:\s+(.*))?$")
+GROUP_COLON_PATTERN = re.compile(r"^(@@[A-Za-z0-9_\-]+):(.*)$")
+GROUP_EQUALS_PATTERN = re.compile(r"^(@@[A-Za-z0-9_\-]+)\s*=\s*(.*)$")
+
+
 CHECK_PATTERN = re.compile(
     r"^Check\s*\(\s*(?P<group>@@[A-Za-z0-9_\-]+)\s*(?P<operator>>=|<=|==|!=|>|<)\s*(?P<threshold>\d+)\s*\)\s*$",
     re.IGNORECASE,
 )
+
+
+def _parse_group_definition_line(
+    content: str,
+    inline_comment: Optional[str],
+    line_number: int,
+) -> Optional[GroupDefinition]:
+    if not content.startswith("@@"):
+        return None
+
+    triple_match = GROUP_TRIPLE_PATTERN.match(content)
+    if triple_match:
+        display_token = triple_match.group(1)
+        members_part = (triple_match.group(2) or "").strip()
+        members_tokens = _coalesce_at_tokens(_tokenize_line(members_part)) if members_part else []
+        alias_token = "@@" + display_token[3:]
+        normalized = normalize_group_key(alias_token)
+        return GroupDefinition(
+            normalized_name=normalized,
+            display_token=display_token,
+            alias_token=alias_token,
+            members=list(members_tokens),
+            delimiter=None,
+            delimiter_attached=False,
+            comment=inline_comment,
+            line_number=line_number,
+        )
+
+    colon_match = GROUP_COLON_PATTERN.match(content)
+    if colon_match:
+        display_token = colon_match.group(1)
+        members_part = (colon_match.group(2) or "").strip()
+        members_tokens = _coalesce_at_tokens(_tokenize_line(members_part)) if members_part else []
+        alias_token = display_token
+        normalized = normalize_group_key(alias_token)
+        return GroupDefinition(
+            normalized_name=normalized,
+            display_token=display_token,
+            alias_token=alias_token,
+            members=list(members_tokens),
+            delimiter=":",
+            delimiter_attached=True,
+            comment=inline_comment,
+            line_number=line_number,
+        )
+
+    equals_match = GROUP_EQUALS_PATTERN.match(content)
+    if equals_match:
+        display_token = equals_match.group(1)
+        members_part = (equals_match.group(2) or "").strip()
+        members_tokens = _coalesce_at_tokens(_tokenize_line(members_part)) if members_part else []
+        alias_token = display_token
+        normalized = normalize_group_key(alias_token)
+        return GroupDefinition(
+            normalized_name=normalized,
+            display_token=display_token,
+            alias_token=alias_token,
+            members=list(members_tokens),
+            delimiter="=",
+            delimiter_attached=False,
+            comment=inline_comment,
+            line_number=line_number,
+        )
+
+    return None
 
 
 def _parse_check(line: str, line_number: int, source: Path) -> Optional[CheckDirective]:
@@ -238,51 +402,187 @@ def parse_codeowners(
     raw_entries: List[_RawEntry] = []
     inline_groups: Dict[str, List[str]] = {}
     checks: List[CheckDirective] = []
+    group_definitions: List[GroupDefinition] = []
+    blocks: List[CodeownersBlock] = []
+    layout: List[LayoutItem] = []
+    current_block: Optional[_BlockContext] = None
 
     with codeowners_path.open("r", encoding="utf-8") as handle:
         for index, line in enumerate(handle, start=1):
-            stripped = line.strip()
+            raw_line = line.rstrip("\n")
+            content, inline_comment = _split_content_and_comment(raw_line)
+            stripped = content.strip()
+            indent = raw_line[: len(raw_line) - len(raw_line.lstrip())]
+
+            if current_block is not None:
+                if stripped == "}":
+                    block = CodeownersBlock(
+                        index=current_block.index,
+                        start_line=current_block.start_line,
+                        end_line=index,
+                        items=current_block.items,
+                    )
+                    blocks.append(block)
+                    layout.append(block)
+                    current_block = None
+                    continue
+
+                if not stripped and not (inline_comment and inline_comment.strip()):
+                    current_block.items.append(BlockItem(kind="blank", line_number=index))
+                    continue
+
+                if stripped.startswith("#"):
+                    current_block.items.append(
+                        BlockItem(
+                            kind="comment",
+                            line_number=index,
+                            indent=indent,
+                            text=raw_line.strip(),
+                        )
+                    )
+                    continue
+
+                if stripped.lower().startswith("check"):
+                    check = _parse_check(raw_line, index, codeowners_path)
+                    if check:
+                        check.block_index = current_block.index
+                        checks.append(check)
+                        check_index = len(checks) - 1
+                        current_block.items.append(
+                            BlockItem(
+                                kind="check",
+                                line_number=index,
+                                indent=indent,
+                                check_index=check_index,
+                                inline_comment=inline_comment,
+                            )
+                        )
+                    continue
+
+                tokens = _coalesce_at_tokens(_tokenize_line(content))
+                if len(tokens) >= 2:
+                    pattern = tokens[0]
+                    owners_tokens = tokens[1:]
+                    raw_entries.append(
+                        _RawEntry(
+                            pattern=pattern,
+                            owners_tokens=owners_tokens,
+                            line_number=index,
+                            source=codeowners_path,
+                            inline_comment=inline_comment,
+                            block_index=current_block.index,
+                            indent=indent,
+                        )
+                    )
+                    entry_index = len(raw_entries) - 1
+                    current_block.items.append(
+                        BlockItem(
+                            kind="entry",
+                            line_number=index,
+                            indent=indent,
+                            entry_index=entry_index,
+                        )
+                    )
+                    continue
+
+                if len(tokens) == 1:
+                    current_block.items.append(
+                        BlockItem(
+                            kind="pattern",
+                            line_number=index,
+                            indent=indent,
+                            pattern=tokens[0],
+                            inline_comment=inline_comment,
+                        )
+                    )
+                    continue
+
+                if stripped:
+                    current_block.items.append(
+                        BlockItem(
+                            kind="raw",
+                            line_number=index,
+                            indent=indent,
+                            text=stripped,
+                        )
+                    )
+                continue
+
             if not stripped:
+                layout.append(BlankLine(line_number=index))
                 continue
+
             if stripped.startswith("#"):
+                layout.append(CommentLine(text=raw_line.strip(), line_number=index, indent=indent))
                 continue
-            if stripped in {"{", "}"}:
+
+            if stripped == "{":
+                current_block = _BlockContext(index=len(blocks), start_line=index)
+                continue
+
+            if stripped == "}":
+                # unmatched closing brace, ignore gracefully
                 continue
 
             if stripped.lower().startswith("check"):
-                check = _parse_check(line, index, codeowners_path)
+                check = _parse_check(raw_line, index, codeowners_path)
                 if check:
                     checks.append(check)
+                    check_index = len(checks) - 1
+                    layout.append(
+                        CheckLineItem(
+                            check_index=check_index,
+                            line_number=index,
+                            indent=indent,
+                            inline_comment=inline_comment,
+                        )
+                    )
                 continue
 
-            if stripped.startswith("@@") and (":" in stripped or "=" in stripped) and stripped.split()[0].startswith("@@"):
-                delimiter = ":" if ":" in stripped else "="
-                name, _, remainder = stripped.partition(delimiter)
-                owners_tokens = _coalesce_at_tokens(_tokenize_line(remainder))
-                inline_groups[name.strip()] = owners_tokens
+            group_definition = _parse_group_definition_line(stripped, inline_comment, index)
+            if group_definition:
+                inline_groups[group_definition.alias_token] = list(group_definition.members)
+                group_definitions.append(group_definition)
+                layout.append(group_definition)
                 continue
 
-            if stripped.startswith("@@@"):
-                tokens = _tokenize_line(line)
-                if len(tokens) >= 2:
-                    group_token = tokens[0]
-                    owners_tokens = _coalesce_at_tokens(tokens[1:])
-                    alias = "@@" + group_token[3:]
-                    inline_groups[alias] = owners_tokens
-                continue
-
-            parts = _tokenize_line(line)
-            if len(parts) < 2:
-                continue
-            pattern, owners_tokens = parts[0], _coalesce_at_tokens(parts[1:])
-            raw_entries.append(
-                _RawEntry(
-                    pattern=pattern,
-                    owners=owners_tokens,
-                    line_number=index,
-                    source=codeowners_path,
+            tokens = _coalesce_at_tokens(_tokenize_line(content))
+            if len(tokens) >= 2:
+                pattern = tokens[0]
+                owners_tokens = tokens[1:]
+                raw_entries.append(
+                    _RawEntry(
+                        pattern=pattern,
+                        owners_tokens=owners_tokens,
+                        line_number=index,
+                        source=codeowners_path,
+                        inline_comment=inline_comment,
+                        indent=indent,
+                    )
                 )
-            )
+                entry_index = len(raw_entries) - 1
+                layout.append(
+                    StandaloneEntryItem(
+                        entry_index=entry_index,
+                        line_number=index,
+                        indent=indent,
+                    )
+                )
+                continue
+
+            # Preserve any non-empty raw lines that do not match known constructs as comments
+            if raw_line.strip():
+                layout.append(CommentLine(text=raw_line.strip(), line_number=index, indent=indent))
+
+    if current_block is not None:
+        block = CodeownersBlock(
+            index=current_block.index,
+            start_line=current_block.start_line,
+            end_line=None,
+            items=current_block.items,
+        )
+        blocks.append(block)
+        layout.append(block)
 
     merged_groups = {normalize_group_key(key): list(values) for key, values in inline_groups.items()}
 
@@ -295,17 +595,47 @@ def parse_codeowners(
             resolved_groups[normalized] = list(merged_groups[key])
 
     entries: List[CodeownersEntry] = []
-    for raw_entry in raw_entries:
-        owners = _expand_owner_tokens(raw_entry.owners, merged_groups)
+    entry_lookup: Dict[int, CodeownersEntry] = {}
+    for idx, raw_entry in enumerate(raw_entries):
+        owners = _expand_owner_tokens(raw_entry.owners_tokens, merged_groups)
         entry = CodeownersEntry(
             pattern=raw_entry.pattern,
             owners=owners,
             line_number=raw_entry.line_number,
             source=raw_entry.source,
         )
+        entry.block_index = raw_entry.block_index
+        entry.raw_owners = list(raw_entry.owners_tokens)
+        entry.inline_comment = raw_entry.inline_comment
+        entry.indent = raw_entry.indent
         entries.append(entry)
+        entry_lookup[idx] = entry
 
-    return CodeownersParseResult(entries=entries, checks=checks, groups=resolved_groups)
+    for item in layout:
+        if isinstance(item, StandaloneEntryItem) and item.entry_index in entry_lookup:
+            item.entry = entry_lookup[item.entry_index]
+        elif isinstance(item, CodeownersBlock):
+            for block_item in item.items:
+                if block_item.entry_index is not None and block_item.entry_index in entry_lookup:
+                    block_item.entry = entry_lookup[block_item.entry_index]
+
+    check_lookup: Dict[int, CheckDirective] = {idx: check for idx, check in enumerate(checks)}
+    for item in layout:
+        if isinstance(item, CheckLineItem) and item.check_index in check_lookup:
+            item.check = check_lookup[item.check_index]
+        elif isinstance(item, CodeownersBlock):
+            for block_item in item.items:
+                if block_item.check_index is not None and block_item.check_index in check_lookup:
+                    block_item.check = check_lookup[block_item.check_index]
+
+    return CodeownersParseResult(
+        entries=entries,
+        checks=checks,
+        groups=resolved_groups,
+        group_definitions=group_definitions,
+        blocks=blocks,
+        layout=layout,
+    )
 
 
 def load_codeowners(codeowners_path: Path) -> List[CodeownersEntry]:
