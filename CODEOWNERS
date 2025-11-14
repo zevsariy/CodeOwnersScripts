@@ -1,76 +1,414 @@
-# Example CODEOWNERS configuration demonstrating advanced patterns.
-# Lines are evaluated top-to-bottom; the last matching pattern wins.
+# Comprehensive CODEOWNERS example with inline groups, nested aliases,
+# guardrails, negations, and section overrides. The last matching pattern wins.
 
-# Global fallback owner for any file not matched below.
-* @core-team
+# Inline group definitions (all responsibility aliases live here).
+@@@CoreSquad @alice @bob @carol
+@@@SecurityGuild @zelda @mike @ivy
+@@@PlatformLeads @@CoreSquad @walter
+@@@DocsCircle @penelope @quinn
+@@@MobileStars @ioslead @androidlead @firesupport
+@@@PaymentsTaskForce @@SecurityGuild @pay-eng1 @pay-eng2 @pay-eng3
+@@DataStewards: @datajane @datamax @analyticsbot
+@@SRECrew = @@PlatformLeads @ops-fox @ops-hawk
+@@@DXChampions @@DocsCircle @developer-relations
+@@@ComplianceTaskForce @@SecurityGuild @legal-counsel
+@@RubyGuild: @ruby-guild
+@@FrontendDX: @frontend-guild @@DXChampions
+@@DesignSystemTeam: @design-system
+@@VendorRelations: @third-party-relations
+@@InfraOwners: @@SRECrew @@SecurityGuild
+@@TerraformCaptainsGroup: @@SRECrew @terraform-captains
+@@TerraformProd: @@SecurityGuild @compliance-office
+@@AnsibleCrew: @@SRECrew
+@@KubernetesCrew: @@SRECrew @platform-k8s
+@@KubernetesProdSecure: @@SecurityGuild
+@@DataPipelines: @@DataStewards @pipeline-owners
+@@DataAirflow: @@DataStewards @data-ops
+@@DataNotebooks: @@DataStewards @ml-leads
+@@ExperimentalLab: @experimental-lab
+@@ObservabilityHub: @@SRECrew @observability-hub
+@@IncidentCommand: @@SRECrew @incident-commanders
+@@MarketingAutomation: @marketing-automation
+@@InternalComms: @internal-comms
+@@SREPlaybooks: @@SRECrew @@CoreSquad
+@@FallbackOncall: @@SRECrew @oncall-rotation
+@@LegalCounsel: @legal-counsel
+@@FrontendTSOwners: @@DXChampions @frontend-guild
+@@GoSecurePlatform: @@PlatformLeads @@SecurityGuild
+@@AndroidStars: @@MobileStars @android-guild
+@@IOSStars: @@MobileStars @ios-guild
+@@WebExperience: @frontend-guild @ux-writers @@DXChampions
+@@LegacyTigerTeam: @legacy-tiger-team
+@@ApiGatewayOwners: @@PlatformLeads @gateway-owners
+@@CatalogOwners: @catalog-hub @@PlatformLeads
+@@SearchAPICore: @search-platform @@PlatformLeads
+@@SearchConfigTeam: @search-platform @config-curators
+@@DocsCircleWriters: @@DocsCircle @tech-writers
+@@DocsAPITeam: @@DXChampions @devrel @api-ambassadors
+@@InternalDocsTeam: @@CoreSquad @@DocsCircle
+@@FrontendGuild: @frontend-guild
+@@LocalizationSquad: @localization-squad
+@@MarketingSite: @marketing-site
+@@TestsOwnership: @qa-lead @@DXChampions
+@@TestsE2E: @qa-lead @automation-guild
+@@PerfGuardiansTeam: @perf-guardians
+@@QALead: @qa-lead
+@@DevToolsTeam: @dev-tools
+@@MigrationSquad: @@PlatformLeads @database-guardians
+@@ExperimentHub: @experiment-hub
+@@MLLeads: @ml-leads
+@@MLModelsTeam: @ml-leads @data-science-council
+@@StagingChampions: @staging-champions
+@@ProdConfigOwners: @@SRECrew @@SecurityGuild
+@@PaymentsPayPal: @@PaymentsTaskForce @paypal-smes
+@@PaymentsStripe: @@PaymentsTaskForce @stripe-smes
+@@PaymentsMigrations: @@PaymentsTaskForce @database-guardians
+@@ThreatModelersTeam: @@SecurityGuild @threat-modelers
+@@SecurityToolingTeam: @@SecurityGuild @security-tooling
+@@ComplianceOfficeTeam: @@SecurityGuild @compliance-office
+@@RepoPolicyOwners: @@CoreSquad @@ComplianceTaskForce
 
-# Root-level files.
-/README.md @docs-team
-/CONTRIBUTING.md @docs-team
-/.github/workflows/ @devops-team
+# Governance-critical assets owned by CoreSquad.
+{
+    /.github/CODEOWNERS @@CoreSquad
+    /.github/workflows/** @@CoreSquad
+    /.github/ISSUE_TEMPLATE/** @@CoreSquad
+    /.gitignore @@CoreSquad
+    Check (@@CoreSquad >= 4)
+}
 
-# Language-specific globs.
-*.py @backend-leads
-*.ts @frontend-leads
-*.css @frontend-guild
+# Global fallback for any path not matched elsewhere.
+{
+    * @@FallbackOncall
+    Check (@@FallbackOncall >= 2)
+}
 
-# Scoped patterns override broader globs.
-/apps/mobile/** @mobile-team
-/apps/mobile/android/** @android-guild
-/apps/mobile/ios/** @ios-guild
-/apps/web/** @frontend-leads @ux-writers
+# Top-level documentation.
+{
+    /README.md @@DocsCircle
+    Check (@@DocsCircle >= 2)
+}
+{
+    /CHANGELOG.md @@DXChampions
+    Check (@@DXChampions >= 3)
+}
+{
+    /LICENSE @@LegalCounsel
+    Check (@@LegalCounsel >= 1)
+}
 
-# Ignore generated artifacts by excluding the build directory.
-/build/ @devops-team
+# Language defaults spanning the repo.
+{
+    *.py @@PlatformLeads
+    Check (@@PlatformLeads >= 3)
+}
+{
+    *.ts @@FrontendTSOwners
+    Check (@@FrontendTSOwners >= 4)
+}
+{
+    *.go @@GoSecurePlatform
+    Check (@@GoSecurePlatform >= 4)
+}
+{
+    Dockerfile @@SRECrew
+    Check (@@SRECrew >= 4)
+}
 
-# Service-specific owners.
-/services/search-api/** @search-api-team
-/services/search-api/config/** @search-platform
-/services/payments/** @payments-team
-/services/payments/migrations/** @payments-team @dba-team
-/services/payments/integrations/ @payments-integrations
+# Application domains.
+{
+    /apps/mobile/** @@MobileStars
+    Check (@@MobileStars >= 3)
+}
+{
+    /apps/mobile/android/** @@AndroidStars
+    Check (@@AndroidStars >= 4)
+}
+{
+    /apps/mobile/ios/** @@IOSStars
+    Check (@@IOSStars >= 4)
+}
+{
+    /apps/web/** @@WebExperience
+    Check (@@WebExperience >= 4)
+}
+{
+    /apps/web/**/legacy/** @@LegacyTigerTeam
+    Check (@@LegacyTigerTeam >= 2)
+}
 
-# Library shared across services (files only, not vendor folder).
-/lib/**/*.py @platform-architecture
-/lib/vendor/** @third-party-relations
+# Backend services ownership.
+{
+    /services/api-gateway/** @@ApiGatewayOwners
+    Check (@@ApiGatewayOwners >= 4)
+}
+{
+    /services/catalog/** @@CatalogOwners
+    Check (@@CatalogOwners >= 3)
+}
+{
+    /services/search-api/** @@SearchAPICore
+    Check (@@SearchAPICore >= 4)
+}
+{
+    /services/search-api/config/** @@SearchConfigTeam
+    Check (@@SearchConfigTeam >= 3)
+}
+{
+    /services/search-api/config/secure/** @@SecurityGuild
+    Check (@@SecurityGuild >= 3)
+}
 
-# Docs ownership with combination of languages.
-/docs/ @docs-team @tech-writers
-/docs/api/** @developer-relations
-/docs/api/payment*.md @payments-team
+# Payments platform surfaces with guardrail.
+{
+    /services/billing/** @@PaymentsTaskForce
+    Check (@@PaymentsTaskForce >= 5)
+}
+{
+    /services/billing/integrations/paypal/** @@PaymentsPayPal
+    Check (@@PaymentsPayPal >= 5)
+}
+{
+    /services/billing/integrations/stripe/** @@PaymentsStripe
+    Check (@@PaymentsStripe >= 5)
+}
+{
+    /services/billing/migrations/** @@PaymentsMigrations
+    Check (@@PaymentsMigrations >= 5)
+}
+{
+    /docs/api/payments/** @@PaymentsTaskForce
+    Check (@@PaymentsTaskForce >= 5)
+}
 
-# Data pipelines.
-/data/** @data-eng @analytics
-/data/airflow/dags/** @data-ops
+# Shared libraries and vendor code.
+{
+    /libs/core/** @@PlatformLeads
+    Check (@@PlatformLeads >= 3)
+}
+{
+    /libs/core/**/*.rb @@RubyGuild
+    Check (@@RubyGuild >= 2)
+}
+{
+    /libs/ui/** @@FrontendDX
+    Check (@@FrontendDX >= 4)
+}
+{
+    /libs/ui/styleguide/** @@DesignSystemTeam
+    Check (@@DesignSystemTeam >= 2)
+}
+{
+    /libs/vendor/** @@VendorRelations
+    Check (@@VendorRelations >= 2)
+}
 
-# Terraform and cloud infra.
-/infrastructure/** @cloud-center
-/infrastructure/aws/** @cloud-center @security
-/infrastructure/aws/accounts/prod/** @security @executive-approvals
+# Infrastructure and cloud.
+{
+    /infrastructure/** @@InfraOwners
+    Check (@@InfraOwners >= 5)
+}
+{
+    /infrastructure/terraform/** @@TerraformCaptainsGroup
+    Check (@@TerraformCaptainsGroup >= 3)
+}
+{
+    /infrastructure/terraform/envs/prod/** @@TerraformProd
+    Check (@@TerraformProd >= 2)
+}
+{
+    /infrastructure/ansible/** @@AnsibleCrew
+    Check (@@AnsibleCrew >= 3)
+}
+{
+    /infrastructure/kubernetes/** @@KubernetesCrew
+    Check (@@KubernetesCrew >= 4)
+}
+{
+    /infrastructure/kubernetes/overlays/prod/** @@KubernetesProdSecure
+    Check (@@KubernetesProdSecure >= 2)
+}
 
-# Security-sensitive files.
-SECURITY.md @security
-scripts/secrets/** @security-tooling
+# Data platform.
+{
+    /data/** @@DataStewards
+    Check (@@DataStewards >= 3)
+}
+{
+    /data/pipelines/** @@DataPipelines
+    Check (@@DataPipelines >= 3)
+}
+{
+    /data/airflow/dags/** @@DataAirflow
+    Check (@@DataAirflow >= 3)
+}
+{
+    /data/notebooks/** @@DataNotebooks
+    Check (@@DataNotebooks >= 3)
+}
+{
+    /data/shadow/** @@ExperimentalLab  # intentionally without group alias
+    Check (@@ExperimentalLab >= 1)
+}
 
-# Override tests to ensure QA visibility.
-**/tests/** @qa-team
-**/tests/performance/** @perf-team
+# Documentation areas.
+{
+    /docs/** @@DocsCircleWriters
+    Check (@@DocsCircleWriters >= 3)
+}
+{
+    /docs/api/** @@DocsAPITeam
+    Check (@@DocsAPITeam >= 4)
+}
+{
+    /docs/internal/** @@InternalDocsTeam
+    Check (@@InternalDocsTeam >= 4)
+}
+{
+    /docs/internal/runbooks/** @@SRECrew
+    Check (@@SRECrew >= 4)
+}
 
-# Example of negated pattern: exclude staging configs from ops team ownership.
-!config/staging/**
-config/** @sre-team
-config/staging/** @staging-champions
+# Security and compliance hotspots with guardrail membership.
+{
+    SECURITY.md @@SecurityGuild
+    Check (@@SecurityGuild >= 3)
+}
+{
+    /threat-models/** @@ThreatModelersTeam
+    Check (@@ThreatModelersTeam >= 3)
+}
+{
+    /secrets/** @@SecurityGuild
+    Check (@@SecurityGuild >= 3)
+}
+{
+    /scripts/manage-secrets/** @@SecurityToolingTeam
+    Check (@@SecurityToolingTeam >= 3)
+}
+{
+    /compliance/** @@ComplianceOfficeTeam
+    Check (@@ComplianceOfficeTeam >= 3)
+}
 
-# Tooling directories.
-/tools/** @dev-tools
-/tools/linters/** @dev-tools @quality-guild
+# Observability stack.
+{
+    /monitoring/** @@ObservabilityHub
+    Check (@@ObservabilityHub >= 3)
+}
+{
+    /logging/** @@SRECrew
+    Check (@@SRECrew >= 4)
+}
+{
+    /alerts/** @@IncidentCommand
+    Check (@@IncidentCommand >= 3)
+}
 
-# Monorepo packages with individual maintainers.
-/packages/core/** @core-package-owners
-/packages/core/examples/** @developer-relations
-/packages/ui/** @ui-components
-/packages/ui/storybook/** @design-system
+# Frontend assets and marketing surfaces.
+{
+    /assets/** @@FrontendGuild
+    Check (@@FrontendGuild >= 4)
+}
+{
+    /assets/**/i18n/** @@LocalizationSquad
+    Check (@@LocalizationSquad >= 3)
+}
+{
+    /assets/**/themes/** @@DesignSystemTeam
+    Check (@@DesignSystemTeam >= 2)
+}
+{
+    /public/** @@MarketingSite
+    Check (@@MarketingSite >= 2)
+}
 
-# People responsible for repository configuration.
-.gitignore @devops-team @core-team
-CODEOWNERS @core-team @compliance
+# Tests and quality gates.
+{
+    **/tests/** @@TestsOwnership
+    Check (@@TestsOwnership >= 3)
+}
+{
+    **/tests/e2e/** @@TestsE2E
+    Check (@@TestsE2E >= 3)
+}
+{
+    **/tests/performance/** @@PerfGuardiansTeam
+    Check (@@PerfGuardiansTeam >= 2)
+}
+{
+    /test-fixtures/** @@QALead
+    Check (@@QALead >= 1)
+}
+
+# SRE-owned configuration and reliability assets with guardrail.
+{
+    config/** @@SRECrew
+    !config/local/**
+    /scripts/reliability/** @@SRECrew
+    Check (@@SRECrew >= 4)
+}
+{
+    config/environments/staging/** @@StagingChampions
+    Check (@@StagingChampions >= 2)
+}
+{
+    config/environments/prod/** @@ProdConfigOwners
+    Check (@@ProdConfigOwners >= 4)
+}
+{
+    config/environments/prod/secrets/** @@SecurityGuild
+    Check (@@SecurityGuild >= 3)
+}
+{
+    /scripts/reliability/playbooks/** @@SREPlaybooks
+    Check (@@SREPlaybooks >= 4)
+}
+
+# Tooling and automation scripts.
+{
+    /scripts/** @@PlatformLeads
+    Check (@@PlatformLeads >= 3)
+}
+{
+    /scripts/cli/** @@DevToolsTeam
+    Check (@@DevToolsTeam >= 2)
+}
+{
+    /scripts/migrations/** @@MigrationSquad
+    Check (@@MigrationSquad >= 3)
+}
+
+# Platform experiments.
+{
+    /experiments/** @@ExperimentHub
+    Check (@@ExperimentHub >= 2)
+}
+{
+    /experiments/**/ml/** @@MLLeads
+    Check (@@MLLeads >= 2)
+}
+{
+    /experiments/**/ml/models/** @@MLModelsTeam
+    Check (@@MLModelsTeam >= 3)
+}
+
+# Reusable templates.
+{
+    /templates/** @@DXChampions
+    Check (@@DXChampions >= 3)
+}
+{
+    /templates/email/** @@MarketingAutomation
+    Check (@@MarketingAutomation >= 2)
+}
+{
+    /templates/slack/** @@InternalComms
+    Check (@@InternalComms >= 2)
+}
+
+# Miscellaneous overrides.
+{
+    CODEOWNERS @@RepoPolicyOwners
+    Check (@@RepoPolicyOwners >= 4)
+}

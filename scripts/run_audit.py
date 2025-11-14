@@ -11,7 +11,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from codeowners_tools.audit import generate_audit
-from codeowners_tools.groups import GroupConfigError, load_group_definitions
 from codeowners_tools.remote import prepare_repository
 
 
@@ -37,11 +36,6 @@ def parse_args() -> argparse.Namespace:
         default="CODEOWNERS",
         type=Path,
         help="Path to the CODEOWNERS file relative to the repository root.",
-    )
-    parser.add_argument(
-        "--group-config",
-        type=Path,
-        help="Optional path to group definitions (relative to the repo when not absolute).",
     )
     parser.add_argument(
         "--suggest-limit",
@@ -118,23 +112,11 @@ def main() -> int:
             print(f"CODEOWNERS file not found: {codeowners_path}", file=sys.stderr)
             return 2
 
-        group_definitions = None
-        if args.group_config:
-            group_config_path = args.group_config
-            if not group_config_path.is_absolute():
-                group_config_path = repo_root / group_config_path
-            try:
-                group_definitions = load_group_definitions(group_config_path)
-            except GroupConfigError as exc:
-                print(f"Failed to load group config: {exc}", file=sys.stderr)
-                return 2
-
         audit = generate_audit(
             repo_root=repo_root,
             codeowners_path=codeowners_path,
             repo_url=args.repo_url,
             branch=args.branch,
-            group_definitions=group_definitions,
             max_unowned=args.max_unowned,
             suggest_limit=args.suggest_limit,
             min_commits=args.min_commits,

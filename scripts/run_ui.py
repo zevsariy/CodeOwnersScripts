@@ -19,7 +19,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from codeowners_tools.audit import AuditResult, generate_audit
-from codeowners_tools.groups import GroupConfigError, load_group_definitions
 from codeowners_tools.remote import prepare_repository
 from codeowners_tools.repo import list_tracked_files
 
@@ -33,7 +32,6 @@ def _default_form_values() -> Dict[str, str]:
         "repo_url": "",
         "branch": "",
         "codeowners": "CODEOWNERS",
-        "group_config": "",
         "max_unowned": "20",
         "suggest_limit": "3",
         "min_commits": "1",
@@ -61,7 +59,6 @@ def _render_form(values: Dict[str, str]) -> str:
       <fieldset>
         <legend>Paths</legend>
         <label>CODEOWNERS path<br><input name=\"codeowners\" type=\"text\" required value=\"{_escape(values.get('codeowners', 'CODEOWNERS'))}\"></label>
-        <label>Group config path<br><input name=\"group_config\" type=\"text\" value=\"{_escape(values.get('group_config', ''))}\" placeholder=\"optional\"></label>
       </fieldset>
       <fieldset>
         <legend>Suggestions</legend>
@@ -745,7 +742,6 @@ def _run_audit_from_form(values: Dict[str, str]) -> AuditResult:
     if not codeowners_value:
         raise ValueError("CODEOWNERS path is required")
 
-    group_config_value = values.get("group_config", "").strip()
     include_merges = bool(values.get("include_merges"))
     since = values.get("since", "").strip() or None
 
@@ -761,22 +757,12 @@ def _run_audit_from_form(values: Dict[str, str]) -> AuditResult:
         if not codeowners_path.exists():
             raise FileNotFoundError(f"CODEOWNERS file not found: {codeowners_path}")
 
-        group_definitions = None
-        if group_config_value:
-            group_config_path = Path(group_config_value)
-            if not group_config_path.is_absolute():
-                group_config_path = repo_path / group_config_path
-            try:
-                group_definitions = load_group_definitions(group_config_path)
-            except GroupConfigError as exc:
-                raise ValueError(f"Failed to load group config: {exc}") from exc
 
         return generate_audit(
             repo_root=repo_path,
             codeowners_path=codeowners_path,
             repo_url=repo_url,
             branch=branch,
-            group_definitions=group_definitions,
             max_unowned=max_unowned,
             suggest_limit=suggest_limit,
             min_commits=min_commits,

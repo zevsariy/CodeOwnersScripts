@@ -43,9 +43,7 @@ def find_unowned_paths(entries: Sequence[CodeownersEntry], repo_files: Iterable[
 def load_entries_and_repo_files(
     codeowners_path: Path,
     repo_root: Path,
-    *,
-    group_definitions: Optional[Dict[str, Sequence[str]]] = None,
 ) -> Tuple[CodeownersParseResult, List[str]]:
-    parse_result = parse_codeowners(codeowners_path, group_definitions=group_definitions)
+    parse_result = parse_codeowners(codeowners_path)
     files = list_tracked_files(repo_root)
     return parse_result, files

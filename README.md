@@ -20,7 +20,7 @@ python -m venv .venv
 
 ## Usage
 
-By default the scripts use the current directory, but you can point them at another repo with `--repo-root` or supply `--repo-url` to clone a remote branch on the fly. Pair `--codeowners` when the file lives outside the root (for example `.github/CODEOWNERS`). Use `--group-config` to point at a group definition file when your CODEOWNERS uses `@@Group` aliases.
+By default the scripts use the current directory, but you can point them at another repo with `--repo-root` or supply `--repo-url` to clone a remote branch on the fly. Pair `--codeowners` when the file lives outside the root (for example `.github/CODEOWNERS`).
 
 ### Check unused patterns
 
@@ -55,16 +55,16 @@ python scripts\run_audit.py --repo-url https://github.com/org/repo.git --branch 
 ### All-in-one audit
 
 ```powershell
-python scripts\run_audit.py --repo-root C:\path\to\repo --codeowners CODEOWNERS --group-config groups.txt --fail-on-issues
+python scripts\run_audit.py --repo-root C:\path\to\repo --codeowners CODEOWNERS --fail-on-issues
 ```
 
-Change `--max-unowned` to trim the detailed list and apply `--since` when you only care about recent activity. Guardrail directives written as `Check (@@Group >= 2)` are evaluated and surfaced in the report (provide group membership via `--group-config`).
+Change `--max-unowned` to trim the detailed list and apply `--since` when you only care about recent activity. Guardrail directives written as `Check (@@Group >= 2)` are evaluated and surfaced in the report using the group definitions embedded directly in your CODEOWNERS file.
 
 ### Extended syntax support
 
 Besides the standard CODEOWNERS grammar, the parser understands:
 
-- Group aliases referenced as `@@GroupName`, optionally defined inline (`@@GroupName: @alice @bob`) or in an external config file (JSON, YAML, or simple `key: value` text).
+- Group aliases referenced as `@@GroupName`, defined inline via `@@GroupName: @alice @bob` or the shorthand `@@@GroupName @alice @bob` block at the top of the CODEOWNERS file.
 - Nested groups (`@@Backend` can expand to other `@@` aliases).
 - Guardrail directives in block sections, e.g.
 
@@ -77,22 +77,6 @@ Besides the standard CODEOWNERS grammar, the parser understands:
 			Check (@@New_Group >=1)
 	}
 	```
-
-Group definitions file examples:
-
-```text
-@@Platform_ANY: @alice @bob @carol
-@@New_Group = @dave @erin
-```
-
-or
-
-```json
-{
-	"Platform_ANY": ["@alice", "@bob", "@carol"],
-	"New_Group": "@dave @erin"
-}
-```
 
 ### Quick smoke-test
 

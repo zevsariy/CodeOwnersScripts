@@ -232,24 +232,8 @@ def _expand_owner_tokens(tokens: Sequence[str], definitions: Dict[str, Sequence[
     return expanded
 
 
-def _merge_group_definitions(
-    provided: Optional[Dict[str, Sequence[str]]],
-    inline: Dict[str, List[str]],
-) -> Dict[str, List[str]]:
-    merged: Dict[str, List[str]] = {}
-    if provided:
-        for key, values in provided.items():
-            normalized = normalize_group_key(key)
-            merged[normalized] = list(values)
-    for key, values in inline.items():
-        merged[normalize_group_key(key)] = list(values)
-    return merged
-
-
 def parse_codeowners(
     codeowners_path: Path,
-    *,
-    group_definitions: Optional[Dict[str, Sequence[str]]] = None,
 ) -> CodeownersParseResult:
     raw_entries: List[_RawEntry] = []
     inline_groups: Dict[str, List[str]] = {}
@@ -300,7 +284,7 @@ def parse_codeowners(
                 )
             )
 
-    merged_groups = _merge_group_definitions(group_definitions, inline_groups)
+    merged_groups = {normalize_group_key(key): list(values) for key, values in inline_groups.items()}
 
     resolved_groups: Dict[str, List[str]] = {}
     for key in merged_groups:
@@ -324,12 +308,8 @@ def parse_codeowners(
     return CodeownersParseResult(entries=entries, checks=checks, groups=resolved_groups)
 
 
-def load_codeowners(
-    codeowners_path: Path,
-    *,
-    group_definitions: Optional[Dict[str, Sequence[str]]] = None,
-) -> List[CodeownersEntry]:
-    return parse_codeowners(codeowners_path, group_definitions=group_definitions).entries
+def load_codeowners(codeowners_path: Path) -> List[CodeownersEntry]:
+    return parse_codeowners(codeowners_path).entries
 
 
 def resolve_owner_for_path(entries: Iterable[CodeownersEntry], path: str) -> Optional[CodeownersEntry]:

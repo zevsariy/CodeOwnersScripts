@@ -23,7 +23,6 @@ from .git_activity import (
     build_activity_index,
     suggest_owners_for_paths,
 )
-from .groups import load_group_definitions
 from .remote import prepare_repository
 
 __all__ = [
@@ -43,5 +42,4 @@ __all__ = [
     "evaluate_guardrails",
     "generate_audit",
     "prepare_repository",
-    "load_group_definitions",
 ]

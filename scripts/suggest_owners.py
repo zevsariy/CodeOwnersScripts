@@ -12,7 +12,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from codeowners_tools.analysis import find_unowned_paths, load_entries_and_repo_files
 from codeowners_tools.git_activity import build_activity_index, suggest_owners_for_paths
-from codeowners_tools.groups import GroupConfigError, load_group_definitions
 from codeowners_tools.remote import prepare_repository
 
 
@@ -38,11 +37,6 @@ def parse_args() -> argparse.Namespace:
         default="CODEOWNERS",
         type=Path,
         help="Path to the CODEOWNERS file relative to the repository root.",
-    )
-    parser.add_argument(
-        "--group-config",
-        type=Path,
-        help="Optional path to group definitions (relative to the repo when not absolute).",
     )
     parser.add_argument(
         "--paths",
@@ -112,21 +106,9 @@ def main() -> int:
             print(f"CODEOWNERS file not found: {codeowners_path}", file=sys.stderr)
             return 2
 
-        group_definitions = None
-        if args.group_config:
-            group_config_path = args.group_config
-            if not group_config_path.is_absolute():
-                group_config_path = repo_root / group_config_path
-            try:
-                group_definitions = load_group_definitions(group_config_path)
-            except GroupConfigError as exc:
-                print(f"Failed to load group config: {exc}", file=sys.stderr)
-                return 2
-
         parse_result, tracked_files = load_entries_and_repo_files(
             codeowners_path,
             repo_root,
-            group_definitions=group_definitions,
         )
 
         targets = determine_targets(parse_result.entries, tracked_files, args.paths)

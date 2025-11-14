@@ -204,7 +204,6 @@ def generate_audit(
     *,
     repo_url: Optional[str] = None,
     branch: Optional[str] = None,
-    group_definitions: Optional[Dict[str, Sequence[str]]] = None,
     max_unowned: int = 20,
     suggest_limit: int = 3,
     min_commits: int = 1,
@@ -219,7 +218,6 @@ def generate_audit(
     parse_result, tracked_files = load_entries_and_repo_files(
         codeowners_path,
         repo_root,
-        group_definitions=group_definitions,
     )
 
     unused_entries = find_unused_entries(parse_result.entries, tracked_files)
