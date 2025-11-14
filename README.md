@@ -8,7 +8,7 @@ Utility scripts that help grow CODEOWNERS coverage and ownership culture in Git 
 - `scripts/find_unowned_paths.py` - list tracked files that have no owner assignment (works with remote clones too).
 - `scripts/suggest_owners.py` - guess potential owners based on Git activity.
 - `scripts/run_audit.py` - run an end-to-end audit showing unused masks, uncovered files, and guardrail check results in one pass.
-- `scripts/run_ui.py` - start a lightweight local dashboard that wraps `generate_audit` and surfaces results in the browser.
+- `scripts/run_ui.py` - start a lightweight local dashboard that wraps `generate_audit` and surfaces results in the browser (see launch instructions below).
 
 ## Setup
 
@@ -109,10 +109,10 @@ python scripts\suggest_owners.py --codeowners CODEOWNERS --repo-root C:\path\to\
 Spin up the local UI with a single command:
 
 ```powershell
-python scripts\run_ui.py --open-browser
+python scripts\run_ui.py --open-browser --port 8765
 ```
 
-Point the form at a local checkout or provide a remote URL/branch, then hit **Run audit** to view unused patterns, uncovered files, guardrail statuses, and owner suggestions without leaving the browser. All processing happens locally—no authentication required.
+Open `http://127.0.0.1:8765/` (the command above does this automatically) and point the form at a local checkout or a remote URL/branch. Hit **Run audit** to view unused patterns, uncovered files, guardrail statuses, and owner suggestions without leaving the browser. When the audit completes you can download a regenerated CODEOWNERS file that uses the custom `@@@Group` notation. All processing stays local—no authentication involved.
 
 ## Tests
 

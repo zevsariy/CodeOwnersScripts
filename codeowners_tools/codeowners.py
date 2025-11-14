@@ -149,6 +149,24 @@ def _tokenize_line(line: str) -> List[str]:
         return cleaned.split()
 
 
+def _coalesce_at_tokens(tokens: Sequence[str]) -> List[str]:
+    """Merge stray '@' prefixes that were separated by whitespace."""
+    normalized: List[str] = []
+    pending: Optional[str] = None
+    for token in tokens:
+        if pending is not None:
+            normalized.append(pending + token)
+            pending = None
+            continue
+        if token in {"@", "@@"}:
+            pending = token
+            continue
+        normalized.append(token)
+    if pending is not None:
+        normalized.append(pending)
+    return normalized
+
+
 CHECK_PATTERN = re.compile(
     r"^Check\s*\(\s*(?P<group>@@[A-Za-z0-9_\-]+)\s*(?P<operator>>=|<=|==|!=|>|<)\s*(?P<threshold>\d+)\s*\)\s*$",
     re.IGNORECASE,
@@ -256,14 +274,23 @@ def parse_codeowners(
             if stripped.startswith("@@") and (":" in stripped or "=" in stripped) and stripped.split()[0].startswith("@@"):
                 delimiter = ":" if ":" in stripped else "="
                 name, _, remainder = stripped.partition(delimiter)
-                owners_tokens = _tokenize_line(remainder)
+                owners_tokens = _coalesce_at_tokens(_tokenize_line(remainder))
                 inline_groups[name.strip()] = owners_tokens
+                continue
+
+            if stripped.startswith("@@@"):
+                tokens = _tokenize_line(line)
+                if len(tokens) >= 2:
+                    group_token = tokens[0]
+                    owners_tokens = _coalesce_at_tokens(tokens[1:])
+                    alias = "@@" + group_token[3:]
+                    inline_groups[alias] = owners_tokens
                 continue
 
             parts = _tokenize_line(line)
             if len(parts) < 2:
                 continue
-            pattern, owners_tokens = parts[0], parts[1:]
+            pattern, owners_tokens = parts[0], _coalesce_at_tokens(parts[1:])
             raw_entries.append(
                 _RawEntry(
                     pattern=pattern,

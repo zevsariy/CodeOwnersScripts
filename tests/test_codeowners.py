@@ -124,6 +124,23 @@ def _run_git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True)
 
 
+def test_triple_at_group_definition_is_not_parsed_as_pattern(tmp_path):
+    codeowners_content = """
+@@@My_Group @sytkache @ egorkin.oleg
+src/ @@My_Group
+"""
+    path = tmp_path / "CODEOWNERS"
+    path.write_text(codeowners_content.strip())
+
+    result = parse_codeowners(path)
+
+    assert len(result.entries) == 1
+    entry = result.entries[0]
+    assert entry.pattern == "src/"
+    assert entry.owners == ["@sytkache", "@egorkin.oleg"]
+    assert result.groups["My_Group"] == ["@sytkache", "@egorkin.oleg"]
+
+
 def test_generate_audit_reports_uncovered_and_guardrail_issues(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -171,3 +188,8 @@ Check (@@Platform >= 3)
     assert first_suggestion.path == "infra/server.tf"
     assert first_suggestion.candidates
     assert first_suggestion.candidates[0].identity == "Test User <test@example.com>"
+
+    exported = audit.to_custom_codeowners()
+    assert "@@@Platform" in exported
+    assert "infra/server.tf" not in exported  # path stays uncovered, not a pattern
+    assert "Check (@@Platform >= 3)" in exported
