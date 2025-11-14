@@ -80,14 +80,31 @@ def _render_form(values: Dict[str, str]) -> str:
 
 def _render_guardrails(audit: AuditResult) -> str:
     if not audit.guardrails:
-        return "<p>No guardrail directives found.</p>"
+        return "<p>No guardrail checks configured.</p>"
+
     rows = []
     for guardrail in audit.guardrails:
         status = guardrail.status
-        member_count = guardrail.member_count if guardrail.member_count is not None else "&mdash;"
+        normalized_group = guardrail.directive.group
+        members = audit.parse_result.groups.get(normalized_group, []) if normalized_group else []
+        member_count_display = str(guardrail.member_count) if guardrail.member_count is not None else "&mdash;"
+
+        if members:
+            member_list = "".join(f"<li>{_escape(member)}</li>" for member in members)
+            members_cell = (
+                "<details class=\"member-toggle\"><summary>"
+                + _escape(member_count_display)
+                + "</summary><ul>"
+                + member_list
+                + "</ul></details>"
+            )
+        else:
+            members_cell = _escape(member_count_display)
+
         rows.append(
-            f"<tr><td>{_escape(guardrail.directive.raw)}</td><td>{_escape(status)}</td><td>{_escape(member_count)}</td><td>{_escape(guardrail.directive.threshold)}</td></tr>"
+            f"<tr><td>{_escape(guardrail.directive.raw)}</td><td>{_escape(status)}</td><td>{members_cell}</td><td>{_escape(guardrail.directive.threshold)}</td></tr>"
         )
+
     return """<table class=\"results-table\"><thead><tr><th>Check</th><th>Status</th><th>Members</th><th>Threshold</th></tr></thead><tbody>""" + "".join(rows) + "</tbody></table>"
 
 
@@ -127,11 +144,13 @@ def _render_suggestions(audit: AuditResult) -> str:
     blocks = []
     for suggestion in audit.suggestions:
         header = "Directory" if suggestion.is_directory else "File"
+        top_candidates = list(suggestion.candidates)[:5]
         candidate_rows = []
-        for candidate in suggestion.candidates:
+        for index, candidate in enumerate(top_candidates):
             share = f"{candidate.share * 100:.1f}%" if suggestion.total_commits else "0.0%"
+            row_class = " class=\"top-hit\"" if index < 5 else ""
             candidate_rows.append(
-                f"<tr><td>{_escape(candidate.identity)}</td><td>{_escape(candidate.commits)}</td><td>{_escape(share)}</td></tr>"
+                f"<tr{row_class}><td>{_escape(candidate.identity)}</td><td>{_escape(candidate.commits)}</td><td>{_escape(share)}</td></tr>"
             )
         if not candidate_rows:
             candidate_rows.append("<tr><td colspan=3 class=\"muted\">No contributors with enough commits.</td></tr>")
@@ -140,10 +159,27 @@ def _render_suggestions(audit: AuditResult) -> str:
             + "".join(candidate_rows)
             + "</tbody></table>"
         )
+        extra_count = max(len(suggestion.candidates) - len(top_candidates), 0)
+        extra_note = (
+            f"<p class=\"muted\">+{extra_count} more contributors hidden</p>" if extra_count else ""
+        )
         blocks.append(
-            f"<section class=\"suggestion\"><h4>{_escape(header)}: {_escape(suggestion.path)} (total commits: {_escape(suggestion.total_commits)})</h4>{table}</section>"
+            f"<section class=\"suggestion\"><h4>{_escape(header)}: {_escape(suggestion.path)} (total commits: {_escape(suggestion.total_commits)})</h4>{table}{extra_note}</section>"
         )
     return "".join(blocks)
+
+
+def _render_entries(audit: AuditResult) -> str:
+    entries = audit.parse_result.entries
+    if not entries:
+        return "<p>No CODEOWNERS entries parsed.</p>"
+    rows = []
+    for entry in entries:
+        owner_blob = " ".join(entry.owners)
+        rows.append(
+            f"<tr><td>{_escape(entry.pattern)}</td><td>{_escape(owner_blob)}</td><td>{_escape(entry.source.name)}</td><td>{_escape(entry.line_number)}</td></tr>"
+        )
+    return """<table class=\"results-table\"><thead><tr><th>Pattern</th><th>Owners</th><th>File</th><th>Line</th></tr></thead><tbody>""" + "".join(rows) + "</tbody></table>"
 
 
 def _looks_like_team(owner: str) -> bool:
@@ -289,6 +325,7 @@ def _render_result(audit: AuditResult, export_token: Optional[str] = None, expor
                 <div class=\"chart-tile\">
                     <h3>Coverage</h3>
                     <canvas id=\"coverageChart\"></canvas>
+                <div class="chart-fallback">Charts are unavailable. Ensure Chart.js can be loaded, then refresh.</div>
                 </div>
                 <div class=\"chart-tile\">
                     <h3>Owners</h3>
@@ -314,11 +351,15 @@ def _render_result(audit: AuditResult, export_token: Optional[str] = None, expor
             <script type=\"application/json\" id=\"chart-data\">{_escape(chart_json)}</script>
             <script>
             (function() {{
-                if (typeof Chart === "undefined") {{
-                    return;
-                }}
                 var payloadElement = document.getElementById("chart-data");
                 if (!payloadElement) {{
+                    return;
+                }}
+                var card = payloadElement.closest(".card");
+                if (typeof Chart === "undefined") {{
+                    if (card) {{
+                        card.classList.add("chart-unavailable");
+                    }}
                     return;
                 }}
                 var data;
@@ -326,10 +367,18 @@ def _render_result(audit: AuditResult, export_token: Optional[str] = None, expor
                     data = JSON.parse(payloadElement.textContent || "{{}}");
                 }} catch (error) {{
                     console.warn("Failed to parse chart payload", error);
+                    if (card) {{
+                        card.classList.add("chart-unavailable");
+                    }}
                     return;
                 }}
 
+                if (card) {{
+                    card.classList.remove("chart-unavailable");
+                }}
+
                 var palette = ["#0e7a4a", "#2fa86a", "#58c68a", "#8fe0ae", "#c6f1d2", "#1c5236", "#66bb6a", "#9ccc65"];
+                var rendered = false;
 
                 function hasValues(values) {{
                     return Array.isArray(values) && values.some(function(value) {{ return Number(value) > 0; }});
@@ -355,7 +404,7 @@ def _render_result(audit: AuditResult, export_token: Optional[str] = None, expor
                     var container = canvas.closest(".chart-tile");
                     if (config.skipWhen && config.skipWhen()) {{
                         if (container) {{
-                            container.style.display = "none";
+                            container.remove();
                         }}
                         return;
                     }}
@@ -382,6 +431,7 @@ def _render_result(audit: AuditResult, export_token: Optional[str] = None, expor
                             scales: config.scales,
                         }}, config.options || {{}}),
                     }});
+                    rendered = true;
                 }}
 
                 renderChart({{
@@ -474,6 +524,14 @@ def _render_result(audit: AuditResult, export_token: Optional[str] = None, expor
                         return !hasValues(data.guardrails.values);
                     }},
                 }});
+
+                var grid = card ? card.querySelector(".charts-grid") : null;
+                if ((!rendered || (grid && grid.children.length === 0)) && card) {{
+                    if (grid && grid.children.length === 0) {{
+                        grid.remove();
+                    }}
+                    card.classList.add("chart-unavailable");
+                }}
             }})();
             </script>
         </section>
@@ -593,11 +651,18 @@ def _base_layout(content: str, values: Dict[str, str], error: Optional[str]) -> 
       .export-form { margin-top: 14px; }
       .export-form button { width: 100%; }
       .brand-badge { font-size: 13px; letter-spacing: 2px; text-transform: uppercase; color: #aee5c5; display: block; margin-bottom: 6px; font-weight: 600; }
+            .member-toggle summary { cursor: pointer; color: #0e7a4a; font-weight: 600; }
+            .member-toggle ul { margin: 8px 0 0; padding-left: 18px; color: #1f3928; }
+            .member-toggle li { margin-bottom: 4px; }
       .charts-grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
       .chart-tile { background: #f6fbf7; border: 1px solid #c9e7d2; border-radius: 12px; padding: 14px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6); display: grid; gap: 8px; min-height: 220px; }
       .chart-tile h3 { margin: 0; font-size: 14px; color: #1b5034; letter-spacing: 0.2px; }
       .chart-coverage { font-size: 13px; color: #0e7a4a; font-weight: 600; }
-      canvas { width: 100%; height: 200px; }
+            canvas { width: 100%; height: 220px; }
+            .top-hit td { color: #c7362f; font-weight: 600; }
+            .chart-fallback { display: none; margin-top: 12px; padding: 12px; background: #fef7ed; border: 1px dashed #d6a550; border-radius: 10px; color: #7a4c0b; }
+            .card.chart-unavailable .charts-grid { display: none; }
+            .card.chart-unavailable .chart-fallback { display: block; }
     </style>
     """
     return f"""
