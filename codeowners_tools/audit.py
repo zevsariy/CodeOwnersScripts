@@ -26,6 +26,7 @@ from .git_activity import (
     PathOwnershipSuggestion,
     CandidateSuggestion,
     GitActivityIndex,
+    GroupSuggestion,
 )
 
 
@@ -59,6 +60,7 @@ class MaskSuggestion:
     unowned_paths: List[str]
     total_commits: int
     candidates: List[CandidateSuggestion]
+    group_suggestions: Optional[List[GroupSuggestion]] = None
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -74,8 +76,17 @@ class MaskSuggestion:
                     "identity": candidate.identity,
                     "commits": candidate.commits,
                     "share": candidate.share,
+                    "groups": candidate.groups if candidate.groups else [],
                 }
                 for candidate in self.candidates
+            ],
+            "group_suggestions": [
+                {
+                    "group_name": group.group_name,
+                    "matching_members": group.matching_members,
+                    "member_count": group.member_count,
+                }
+                for group in (self.group_suggestions or [])
             ],
         }
 
@@ -269,8 +280,17 @@ class AuditResult:
                             "identity": candidate.identity,
                             "commits": candidate.commits,
                             "share": candidate.share,
+                            "groups": candidate.groups if candidate.groups else [],
                         }
                         for candidate in suggestion.candidates
+                    ],
+                    "group_suggestions": [
+                        {
+                            "group_name": group.group_name,
+                            "matching_members": group.matching_members,
+                            "member_count": group.member_count,
+                        }
+                        for group in (suggestion.group_suggestions or [])
                     ],
                 }
                 for suggestion in self.suggestions
@@ -427,6 +447,9 @@ def _build_mask_suggestions(
     pattern_accumulator: Dict[str, _MaskPatternAccumulator],
     limit: int,
     min_commits: int,
+    groups: Optional[Dict[str, List[str]]] = None,
+    suggest_groups: bool = False,
+    group_limit: int = 5,
 ) -> List[MaskSuggestion]:
     if not pattern_accumulator:
         return []
@@ -445,6 +468,9 @@ def _build_mask_suggestions(
             [target],
             limit=limit,
             min_commits=min_commits,
+            groups=groups,
+            suggest_groups=suggest_groups,
+            group_limit=group_limit,
         )[0]
         suggestions.append(
             MaskSuggestion(
@@ -456,6 +482,7 @@ def _build_mask_suggestions(
                 unowned_paths=sorted(data.paths),
                 total_commits=suggestion.total_commits,
                 candidates=list(suggestion.candidates),
+                group_suggestions=list(suggestion.group_suggestions) if suggestion.group_suggestions else None,
             )
         )
 
@@ -479,6 +506,8 @@ def generate_audit(
     restrict_to_targets: bool = False,
     explicit_targets: Optional[Sequence[str]] = None,
     top_directory_limit: int = 10,
+    suggest_groups: bool = False,
+    group_limit: int = 5,
 ) -> AuditResult:
     start = time.perf_counter()
 
@@ -536,6 +565,9 @@ def generate_audit(
             suggestion_targets,
             limit=suggest_limit,
             min_commits=min_commits,
+            groups=parse_result.groups if suggest_groups else None,
+            suggest_groups=suggest_groups,
+            group_limit=group_limit,
         )
 
     if mask_patterns and index is not None:
@@ -544,6 +576,9 @@ def generate_audit(
             mask_patterns,
             limit=suggest_limit,
             min_commits=min_commits,
+            groups=parse_result.groups if suggest_groups else None,
+            suggest_groups=suggest_groups,
+            group_limit=group_limit,
         )
 
     duration = time.perf_counter() - start
@@ -573,6 +608,8 @@ def generate_audit(
             "restrict_to_targets": restrict_to_targets,
             "explicit_targets": list(explicit_targets) if explicit_targets else None,
             "top_directory_limit": top_directory_limit,
+            "suggest_groups": suggest_groups,
+            "group_limit": group_limit,
         },
         duration_seconds=duration,
     )

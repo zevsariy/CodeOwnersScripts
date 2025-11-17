@@ -41,6 +41,8 @@ def _default_form_values() -> Dict[str, str]:
         "mask_depth": "3",
         "since": "",
         "include_merges": "",
+        "suggest_groups": "on",
+        "group_limit": "5",
     }
 
 
@@ -82,6 +84,8 @@ def _render_form(values: Dict[str, str]) -> str:
         <label>Mask depth (levels)<br><input name=\"mask_depth\" type=\"number\" min=\"0\" value=\"{_escape(values.get('mask_depth', '3'))}\" placeholder=\"0 = full depth\"></label>
         <label>Git --since filter<br><input name=\"since\" type=\"text\" value=\"{_escape(values.get('since', ''))}\" placeholder=\"e.g. 90 days ago\"></label>
         <label class=\"checkbox\"><input type=\"checkbox\" name=\"include_merges\" {checked('include_merges')}>Include merge commits</label>
+        <label class=\"checkbox\"><input type=\"checkbox\" name=\"suggest_groups\" {checked('suggest_groups')}>Suggest groups from CODEOWNERS</label>
+        <label>Top groups to suggest<br><input name=\"group_limit\" type=\"number\" min=\"1\" value=\"{_escape(values.get('group_limit', '5'))}\"></label>
       </fieldset>
       <div class=\"actions\">
         <button type=\"submit\">Run audit</button>
@@ -174,8 +178,12 @@ def _render_suggestions(audit: AuditResult) -> str:
         for index, candidate in enumerate(top_candidates):
             share = f"{candidate.share * 100:.1f}%" if suggestion.total_commits else "0.0%"
             row_class = " class=\"top-hit\"" if index < 5 else ""
+            groups_badge = ""
+            if candidate.groups:
+                groups_display = ", ".join(f"@@{g}" for g in candidate.groups)
+                groups_badge = f" <span class=\"group-badge\" title=\"Member of: {_escape(groups_display)}\">🔖 {len(candidate.groups)} group(s)</span>"
             candidate_rows.append(
-                f"<tr{row_class}><td>{_escape(candidate.identity)}</td><td>{_escape(candidate.commits)}</td><td>{_escape(share)}</td></tr>"
+                f"<tr{row_class}><td>{_escape(candidate.identity)}{groups_badge}</td><td>{_escape(candidate.commits)}</td><td>{_escape(share)}</td></tr>"
             )
         if not candidate_rows:
             candidate_rows.append("<tr><td colspan=3 class=\"muted\">No contributors with enough commits.</td></tr>")
@@ -188,8 +196,24 @@ def _render_suggestions(audit: AuditResult) -> str:
         extra_note = (
             f"<p class=\"muted\">+{extra_count} more contributors hidden</p>" if extra_count else ""
         )
+        
+        group_section = ""
+        if suggestion.group_suggestions:
+            group_rows = []
+            for group in suggestion.group_suggestions:
+                members_display = ", ".join(group.matching_members)
+                group_rows.append(
+                    f"<tr><td>@@{_escape(group.group_name)}</td><td>{_escape(group.member_count)}</td><td>{_escape(members_display)}</td></tr>"
+                )
+            group_table = (
+                """<table class=\"results-table group-table\"><thead><tr><th>Group</th><th>Matching Members</th><th>Identities</th></tr></thead><tbody>"""
+                + "".join(group_rows)
+                + "</tbody></table>"
+            )
+            group_section = f"<details class=\"group-suggestions\"><summary>📋 Suggested groups ({len(suggestion.group_suggestions)})</summary>{group_table}</details>"
+        
         blocks.append(
-            f"<section class=\"suggestion\"><h4>{_escape(header)}: {_escape(suggestion.path)} (total commits: {_escape(suggestion.total_commits)})</h4>{table}{extra_note}</section>"
+            f"<section class=\"suggestion\"><h4>{_escape(header)}: {_escape(suggestion.path)} (total commits: {_escape(suggestion.total_commits)})</h4>{table}{group_section}{extra_note}</section>"
         )
     return "".join(blocks)
 
@@ -205,8 +229,12 @@ def _render_mask_suggestions(audit: AuditResult, cached: Optional[list] = None) 
         candidate_rows = []
         for candidate in suggestion.candidates:
             share = f"{candidate.share * 100:.1f}%" if suggestion.total_commits else "0.0%"
+            groups_badge = ""
+            if candidate.groups:
+                groups_display = ", ".join(f"@@{g}" for g in candidate.groups)
+                groups_badge = f" <span class=\"group-badge\" title=\"Member of: {_escape(groups_display)}\">🔖 {len(candidate.groups)} group(s)</span>"
             candidate_rows.append(
-                f"<tr><td>{_escape(candidate.identity)}</td><td>{_escape(candidate.commits)}</td><td>{_escape(share)}</td></tr>"
+                f"<tr><td>{_escape(candidate.identity)}{groups_badge}</td><td>{_escape(candidate.commits)}</td><td>{_escape(share)}</td></tr>"
             )
         if not candidate_rows:
             candidate_rows.append("<tr><td colspan=3 class=\"muted\">No contributors with enough commits.</td></tr>")
@@ -221,6 +249,22 @@ def _render_mask_suggestions(audit: AuditResult, cached: Optional[list] = None) 
             if suggestion.unowned_paths
             else ""
         )
+        
+        group_section = ""
+        if suggestion.group_suggestions:
+            group_rows = []
+            for group in suggestion.group_suggestions:
+                members_display = ", ".join(group.matching_members)
+                group_rows.append(
+                    f"<tr><td>@@{_escape(group.group_name)}</td><td>{_escape(group.member_count)}</td><td>{_escape(members_display)}</td></tr>"
+                )
+            group_table = (
+                """<table class=\"results-table group-table\"><thead><tr><th>Group</th><th>Matching Members</th><th>Identities</th></tr></thead><tbody>"""
+                + "".join(group_rows)
+                + "</tbody></table>"
+            )
+            group_section = f"<details class=\"group-suggestions\"><summary>📋 Suggested groups ({len(suggestion.group_suggestions)})</summary>{group_table}</details>"
+        
         block_html = (
             """
             <section class=\"suggestion\">
@@ -228,6 +272,7 @@ def _render_mask_suggestions(audit: AuditResult, cached: Optional[list] = None) 
                 <p class=\"muted\">Depth level {depth} · Total commits: {commits}</p>
                 {coverage}
                 {table}
+                {groups}
             </section>
             """.format(
                 header=_escape(scope),
@@ -236,6 +281,7 @@ def _render_mask_suggestions(audit: AuditResult, cached: Optional[list] = None) 
                 commits=_escape(suggestion.total_commits),
                 coverage=coverage_note,
                 table=table,
+                groups=group_section,
             )
         )
         blocks.append(block_html)
@@ -887,6 +933,8 @@ def _run_audit_from_form(values: Dict[str, str]) -> AuditResult:
     if mask_mode not in {"directory", "file"}:
         mask_mode = "directory"
     mask_depth = _parse_int(values, "mask_depth", 3)
+    suggest_groups = bool(values.get("suggest_groups"))
+    group_limit = _parse_int(values, "group_limit", 5)
 
     with ExitStack() as stack:
         repo_path = prepare_repository(stack, repo_root, repo_url, branch)
@@ -909,6 +957,8 @@ def _run_audit_from_form(values: Dict[str, str]) -> AuditResult:
             mask_depth=mask_depth,
             include_merges=include_merges,
             since=since,
+            suggest_groups=suggest_groups,
+            group_limit=group_limit,
         )
 
 
